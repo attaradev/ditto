@@ -65,7 +65,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	tmpPath := destPath + ".tmp"
 
 	// Ensure the destination directory exists.
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
 		return fmt.Errorf("dump: mkdir %s: %w", filepath.Dir(destPath), err)
 	}
 

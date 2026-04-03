@@ -11,7 +11,11 @@ func newTestDB(t *testing.T) *CopyStore {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close db: %v", err)
+		}
+	})
 	return NewCopyStore(db)
 }
 

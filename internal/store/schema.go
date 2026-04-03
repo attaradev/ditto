@@ -28,13 +28,13 @@ func Open(path string) (*sql.DB, error) {
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("store: pragma %q: %w", p, err)
 		}
 	}
 
 	if err := migrate(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
 
@@ -107,11 +107,11 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("begin migration %d: %w", version, err)
 		}
 		if _, err := tx.Exec(stmt); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("migration %d: %w", version, err)
 		}
 		if _, err := tx.Exec(`INSERT INTO schema_version (version) VALUES (?)`, version); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("record migration %d: %w", version, err)
 		}
 		if err := tx.Commit(); err != nil {

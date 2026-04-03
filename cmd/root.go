@@ -3,7 +3,6 @@ package cmd
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 
@@ -105,10 +104,6 @@ database. Copies are created on demand and destroyed automatically.`,
 }
 
 // --- context accessors ---
-
-func dbFromContext(cmd *cobra.Command) *sql.DB {
-	return cmd.Context().Value(keyDB).(*sql.DB)
-}
 
 func copyStoreFromContext(cmd *cobra.Command) *dittostore.CopyStore {
 	return cmd.Context().Value(keyCopyStore).(*dittostore.CopyStore)

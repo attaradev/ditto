@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"text/tabwriter"
 	"time"
 
@@ -64,22 +63,19 @@ func runStatus(cmd *cobra.Command) error {
 	if len(active) > 0 {
 		fmt.Println()
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, styleHeader.Render("ID\tSTATUS\tPORT\tAGE"))
+		if _, err := fmt.Fprintln(w, styleHeader.Render("ID\tSTATUS\tPORT\tAGE")); err != nil {
+			return err
+		}
 		for _, c := range active {
 			age := time.Since(c.CreatedAt).Round(time.Second).String()
-			fmt.Fprintf(w, "%s\t%s\t%d\t%s\n",
-				styleID.Render(c.ID), c.Status, c.Port, age)
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%s\n",
+				styleID.Render(c.ID), c.Status, c.Port, age); err != nil {
+				return err
+			}
 		}
-		w.Flush()
+		if err := w.Flush(); err != nil {
+			return err
+		}
 	}
 	return nil
-}
-
-// dockerVersion returns the running Docker version string, or "unavailable".
-func dockerVersion() string {
-	out, err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").Output()
-	if err != nil {
-		return "unavailable"
-	}
-	return string(out)
 }

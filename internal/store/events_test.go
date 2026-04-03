@@ -10,7 +10,11 @@ func newTestEventStore(t *testing.T) (*EventStore, *CopyStore) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close db: %v", err)
+		}
+	})
 	return NewEventStore(db), NewCopyStore(db)
 }
 

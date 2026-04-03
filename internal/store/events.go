@@ -64,7 +64,9 @@ func (s *EventStore) List(entityID string) ([]*Event, error) {
 	if err != nil {
 		return nil, fmt.Errorf("event.List %s: %w", entityID, err)
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	var events []*Event
 	for rows.Next() {

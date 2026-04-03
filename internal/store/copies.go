@@ -134,7 +134,9 @@ func (s *CopyStore) List(filter ListFilter) ([]*Copy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("copy.List: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	var copies []*Copy
 	for rows.Next() {
@@ -160,7 +162,9 @@ func (s *CopyStore) ListExpired() ([]*Copy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("copy.ListExpired: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	var copies []*Copy
 	for rows.Next() {

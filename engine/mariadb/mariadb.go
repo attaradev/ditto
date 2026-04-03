@@ -4,11 +4,14 @@
 package mariadb
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -43,16 +46,40 @@ func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath str
 		return fmt.Errorf("mariadb: resolve password: %w", err)
 	}
 
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("mariadb: create dump file: %w", err)
+	}
+
+	gz := gzip.NewWriter(f)
+
+	// #nosec G204 -- mysqldump is invoked without a shell and config values are passed as argv.
 	cmd := exec.CommandContext(ctx,
-		"sh", "-c",
-		fmt.Sprintf(
-			"mysqldump --single-transaction --routines --triggers --compress"+
-				" -h %s -P %d -u %s -p%s %s | gzip > %s",
-			src.Host, src.Port, src.User, password, src.Database, destPath,
-		),
+		"mysqldump",
+		"--single-transaction",
+		"--routines",
+		"--triggers",
+		"--compress",
+		"-h", src.Host,
+		"-P", fmt.Sprint(src.Port),
+		"-u", src.User,
+		"-p"+password,
+		src.Database,
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("mariadb: mysqldump failed: %w\n%s", err, out)
+	cmd.Stdout = gz
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		_ = gz.Close()
+		_ = f.Close()
+		return fmt.Errorf("mariadb: mysqldump failed: %w\n%s", err, stderr.Bytes())
+	}
+	if err := gz.Close(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("mariadb: finalize gzip dump: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("mariadb: close dump file: %w", err)
 	}
 	return nil
 }
@@ -64,12 +91,29 @@ func (e *Engine) Restore(ctx context.Context, dumpPath string, port int) error {
 		return fmt.Errorf("mariadb: container not ready before restore: %w", err)
 	}
 
+	f, err := os.Open(dumpPath)
+	if err != nil {
+		return fmt.Errorf("mariadb: open dump file: %w", err)
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("mariadb: open gzip reader: %w", err)
+	}
+	defer func() {
+		_ = gz.Close()
+	}()
+
 	containerName := fmt.Sprintf("ditto-%d", port)
+	// #nosec G204 -- docker is invoked without a shell and the container name is internally generated.
 	cmd := exec.CommandContext(ctx,
-		"docker", "exec", containerName,
-		"sh", "-c",
-		"zcat /dump/latest.gz | mysql -u ditto -pditto ditto",
+		"docker", "exec", "-i", containerName,
+		"mysql", "-u", "ditto", "-pditto", "ditto",
 	)
+	cmd.Stdin = gz
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("mariadb: mysql restore failed: %w\n%s", err, out)
 	}
@@ -84,7 +128,7 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -100,8 +144,11 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 			ctx2, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_, pingErr := db.ExecContext(ctx2, "SELECT 1")
 			cancel()
-			db.Close()
+			closeErr := db.Close()
 			if pingErr == nil {
+				if closeErr != nil {
+					return fmt.Errorf("mariadb: close readiness probe DB: %w", closeErr)
+				}
 				return nil
 			}
 		}

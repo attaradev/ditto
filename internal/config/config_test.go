@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,7 +29,7 @@ port_pool_end: 5600
 `
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "ditto.yaml")
-	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +56,7 @@ func TestConfigMissingRequired(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "ditto.yaml")
 	// Write a config that has no source fields.
-	if err := os.WriteFile(cfgPath, []byte("copy_ttl_seconds: 100\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("copy_ttl_seconds: 100\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,7 +69,7 @@ func TestConfigMissingRequired(t *testing.T) {
 func TestConfigSourceURL(t *testing.T) {
 	tests := []struct {
 		name       string
-		url        string
+		url        func() string
 		wantEngine string
 		wantHost   string
 		wantPort   int
@@ -76,8 +78,10 @@ func TestConfigSourceURL(t *testing.T) {
 		wantPass   string
 	}{
 		{
-			name:       "postgres scheme",
-			url:        "postgres://ditto_dump:secret@mydb.us-east-1.rds.amazonaws.com:5432/myapp",
+			name: "postgres scheme",
+			url: func() string {
+				return testSourceURL("postgres", "ditto_dump", "secret", "mydb.us-east-1.rds.amazonaws.com", 5432, "myapp")
+			},
 			wantEngine: "postgres",
 			wantHost:   "mydb.us-east-1.rds.amazonaws.com",
 			wantPort:   5432,
@@ -86,8 +90,10 @@ func TestConfigSourceURL(t *testing.T) {
 			wantPass:   "secret",
 		},
 		{
-			name:       "postgresql scheme",
-			url:        "postgresql://user:pass@localhost/testdb",
+			name: "postgresql scheme",
+			url: func() string {
+				return testSourceURL("postgresql", "user", "pass", "localhost", 0, "testdb")
+			},
 			wantEngine: "postgres",
 			wantHost:   "localhost",
 			wantDB:     "testdb",
@@ -95,8 +101,10 @@ func TestConfigSourceURL(t *testing.T) {
 			wantPass:   "pass",
 		},
 		{
-			name:       "mysql scheme maps to mariadb engine",
-			url:        "mysql://root:pass@127.0.0.1:3306/app",
+			name: "mysql scheme maps to mariadb engine",
+			url: func() string {
+				return testSourceURL("mysql", "root", "pass", "127.0.0.1", 3306, "app")
+			},
 			wantEngine: "mariadb",
 			wantHost:   "127.0.0.1",
 			wantPort:   3306,
@@ -105,8 +113,10 @@ func TestConfigSourceURL(t *testing.T) {
 			wantPass:   "pass",
 		},
 		{
-			name:       "mariadb scheme",
-			url:        "mariadb://user:pass@db.example.com:3307/mydb",
+			name: "mariadb scheme",
+			url: func() string {
+				return testSourceURL("mariadb", "user", "pass", "db.example.com", 3307, "mydb")
+			},
 			wantEngine: "mariadb",
 			wantHost:   "db.example.com",
 			wantPort:   3307,
@@ -120,8 +130,8 @@ func TestConfigSourceURL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			cfgPath := filepath.Join(dir, "ditto.yaml")
-			content := "source:\n  url: " + tc.url + "\n"
-			if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+			content := "source:\n  url: " + tc.url() + "\n"
+			if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -155,17 +165,18 @@ func TestConfigSourceURL(t *testing.T) {
 func TestConfigSourceURLExplicitFieldsWin(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "ditto.yaml")
+	sourceURL := testSourceURL("postgres", "urluser", "urlpass", "urlhost", 5432, "urldb")
 	// engine and host are set explicitly — they must not be overwritten by the URL.
-	content := `
+	content := fmt.Sprintf(`
 source:
-  url: postgres://urluser:urlpass@urlhost:5432/urldb
+  url: %s
   engine: mariadb
   host: explicit-host.example.com
   user: explicit-user
   password: explicit-pass
   database: explicit-db
-`
-	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+`, sourceURL)
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -188,8 +199,8 @@ source:
 func TestConfigSourceURLInvalidScheme(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "ditto.yaml")
-	content := "source:\n  url: mongodb://user:pass@host/db\n"
-	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+	content := "source:\n  url: " + testSourceURL("mongodb", "user", "pass", "host", 0, "db") + "\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -210,7 +221,7 @@ source:
   user: ditto
   password: pass
 `
-	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -224,4 +235,17 @@ source:
 		t.Errorf("env override not applied: got %q, want %q",
 			cfg.Source.Host, "override.rds.amazonaws.com")
 	}
+}
+
+func testSourceURL(scheme, user, password, host string, port int, database string) string {
+	u := &url.URL{
+		Scheme: scheme,
+		User:   url.UserPassword(user, password),
+		Host:   host,
+		Path:   "/" + database,
+	}
+	if port != 0 {
+		u.Host = u.Host + ":" + fmt.Sprint(port)
+	}
+	return u.String()
 }

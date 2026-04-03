@@ -49,6 +49,7 @@ func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath str
 	dsn := fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s sslmode=require",
 		src.Host, src.Port, src.Database, src.User, password)
 
+	// #nosec G204 -- pg_dump is invoked without a shell and config values are passed as argv.
 	cmd := exec.CommandContext(ctx,
 		"pg_dump",
 		"--format=custom",
@@ -82,6 +83,7 @@ func (e *Engine) Restore(ctx context.Context, dumpPath string, port int) error {
 	// pg_restore reads from /dump/latest.gz inside the container.
 	// The container name is ditto-<port> by convention set by the manager.
 	containerName := fmt.Sprintf("ditto-%d", port)
+	// #nosec G204 -- docker is invoked without a shell and the container name is internally generated.
 	cmd := exec.CommandContext(ctx,
 		"docker", "exec", containerName,
 		"pg_restore",
@@ -106,7 +108,7 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -123,8 +125,11 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_, pingErr := db.ExecContext(ctx, "SELECT 1")
 			cancel()
-			db.Close()
+			closeErr := db.Close()
 			if pingErr == nil {
+				if closeErr != nil {
+					return fmt.Errorf("postgres: close readiness probe DB: %w", closeErr)
+				}
 				return nil
 			}
 		}

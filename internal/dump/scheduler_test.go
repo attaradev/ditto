@@ -28,7 +28,7 @@ func (d *dumpMock) Dump(_ context.Context, _ engine.SourceConfig, dest string) e
 	if d.dumpErr != nil {
 		return d.dumpErr
 	}
-	return os.WriteFile(dest, d.content, 0644)
+	return os.WriteFile(dest, d.content, 0o600)
 }
 
 var _ engine.Engine = (*dumpMock)(nil)
@@ -39,7 +39,11 @@ func newTestScheduler(t *testing.T, destPath string, eng engine.Engine) *Schedul
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close db: %v", err)
+		}
+	})
 
 	cfg := &config.Config{
 		Source: config.Source{
@@ -76,7 +80,7 @@ func TestAtomicSwapFailedDumpPreservesOld(t *testing.T) {
 	dir := t.TempDir()
 	destPath := filepath.Join(dir, "latest.gz")
 
-	if err := os.WriteFile(destPath, []byte("old good dump"), 0644); err != nil {
+	if err := os.WriteFile(destPath, []byte("old good dump"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

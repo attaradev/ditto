@@ -42,8 +42,7 @@ func runCopyCreate(cmd *cobra.Command, ttl, label, format string) error {
 	}
 
 	// Terminal: pretty-print
-	printCopyTable([]*store.Copy{c})
-	return nil
+	return printCopyTable([]*store.Copy{c})
 }
 
 func runCopyList(cmd *cobra.Command) error {
@@ -55,8 +54,7 @@ func runCopyList(cmd *cobra.Command) error {
 	if isPipe() {
 		return json.NewEncoder(os.Stdout).Encode(copies)
 	}
-	printCopyTable(copies)
-	return nil
+	return printCopyTable(copies)
 }
 
 func runCopyDelete(cmd *cobra.Command, id string) error {
@@ -74,15 +72,22 @@ func runCopyLogs(cmd *cobra.Command, id string) error {
 		return json.NewEncoder(os.Stdout).Encode(events)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TIME\tACTION\tACTOR\tMETADATA")
+	if _, err := fmt.Fprintln(w, "TIME\tACTION\tACTOR\tMETADATA"); err != nil {
+		return err
+	}
 	for _, e := range events {
 		meta := ""
 		if len(e.Metadata) > 0 {
-			b, _ := json.Marshal(e.Metadata)
+			b, err := json.Marshal(e.Metadata)
+			if err != nil {
+				return fmt.Errorf("marshal event metadata: %w", err)
+			}
 			meta = string(b)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			e.CreatedAt.Format(time.RFC3339), e.Action, e.Actor, meta)
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			e.CreatedAt.Format(time.RFC3339), e.Action, e.Actor, meta); err != nil {
+			return err
+		}
 	}
 	return w.Flush()
 }
@@ -94,9 +99,11 @@ var (
 	styleFailed = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 )
 
-func printCopyTable(copies []*store.Copy) {
+func printCopyTable(copies []*store.Copy) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, styleHeader.Render("ID\tSTATUS\tPORT\tAGE\tCONNECTION"))
+	if _, err := fmt.Fprintln(w, styleHeader.Render("ID\tSTATUS\tPORT\tAGE\tCONNECTION")); err != nil {
+		return err
+	}
 	for _, c := range copies {
 		status := string(c.Status)
 		switch c.Status {
@@ -107,7 +114,9 @@ func printCopyTable(copies []*store.Copy) {
 		}
 		id := styleID.Render(c.ID)
 		age := time.Since(c.CreatedAt).Round(time.Second).String()
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", id, status, c.Port, age, c.ConnectionString)
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", id, status, c.Port, age, c.ConnectionString); err != nil {
+			return err
+		}
 	}
-	w.Flush()
+	return w.Flush()
 }
