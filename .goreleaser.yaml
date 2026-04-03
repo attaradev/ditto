@@ -1,0 +1,60 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ditto
+    main: ./cmd/ditto
+    binary: ditto
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/attaradev/ditto/internal/version.Version={{.Version}}
+      - -X github.com/attaradev/ditto/internal/version.Commit={{.Commit}}
+      - -X github.com/attaradev/ditto/internal/version.Date={{.Date}}
+
+archives:
+  - id: ditto
+    builds: [ditto]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+      - ditto.yaml.example
+      - hooks/
+
+changelog:
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^fix"
+      order: 1
+    - title: Performance
+      regexp: "^perf"
+      order: 2
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^chore"
+      - "^docs"
+      - "^ci"

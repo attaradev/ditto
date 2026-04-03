@@ -1,0 +1,30 @@
+# Binary
+ditto
+dist/
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# Dump files
+*.gz
+
+# Config with secrets
+ditto.yaml
+
+# Go toolchain
+*.test
+*.out
+vendor/
+
+# Editor and tools
+.claude/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+    <linearGradient id="cyl1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="cyl2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#60A5FA"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="128" height="128" rx="22" fill="url(#bg)"/>
+
+  <!-- ── Back (copy) cylinder — offset down-right ── -->
+  <ellipse cx="73" cy="38" rx="22" ry="8" fill="#60A5FA" opacity="0.7"/>
+  <rect x="51" y="38" width="44" height="52" fill="url(#cyl2)" opacity="0.6"/>
+  <ellipse cx="73" cy="90" rx="22" ry="8" fill="#1D4ED8" opacity="0.6"/>
+  <!-- dashed outline marks it as a copy -->
+  <ellipse cx="73" cy="38" rx="22" ry="8" fill="none" stroke="#93C5FD" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.6"/>
+  <line x1="51" y1="38" x2="51" y2="90" stroke="#93C5FD" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.5"/>
+  <line x1="95" y1="38" x2="95" y2="90" stroke="#93C5FD" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.5"/>
+  <ellipse cx="73" cy="90" rx="22" ry="8" fill="none" stroke="#93C5FD" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.6"/>
+
+  <!-- ── Front (source) cylinder ── -->
+  <ellipse cx="55" cy="30" rx="22" ry="8" fill="#3B82F6"/>
+  <rect x="33" y="30" width="44" height="52" fill="url(#cyl1)"/>
+  <!-- ring lines -->
+  <ellipse cx="55" cy="46" rx="22" ry="8" fill="none" stroke="#93C5FD" stroke-width="1.1" opacity="0.35"/>
+  <ellipse cx="55" cy="62" rx="22" ry="8" fill="none" stroke="#93C5FD" stroke-width="1.1" opacity="0.35"/>
+  <ellipse cx="55" cy="82" rx="22" ry="8" fill="#1E40AF"/>
+
+  <!-- Small arrow between the two cylinders -->
+  <line x1="78" y1="56" x2="91" y2="56" stroke="#60A5FA" stroke-width="2" stroke-linecap="round"/>
+  <polyline points="88,52 93,56 88,60" fill="none" stroke="#60A5FA" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- "d″" monogram at bottom-right — ditto mark motif -->
+  <text
+    x="30" y="118"
+    font-family="ui-monospace,'Cascadia Code','Source Code Pro',Menlo,Consolas,monospace"
+    font-size="15"
+    font-weight="700"
+    fill="#64748B"
+    letter-spacing="1"
+  >ditto</text>
+</svg>

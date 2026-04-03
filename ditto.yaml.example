@@ -1,0 +1,45 @@
+# ditto.yaml — configuration for the ditto CLI
+#
+# Copy this file to ditto.yaml (or ~/.ditto/ditto.yaml) and fill in your values.
+# Environment variables with the prefix DITTO_ override any field here:
+#   DITTO_SOURCE_HOST=other.rds.example.com
+
+source:
+  # Database engine. Supported: "postgres", "mariadb"
+  engine: postgres
+
+  # RDS endpoint
+  host: mydb.abc123.us-east-1.rds.amazonaws.com
+  port: 5432
+  database: myapp
+
+  # Dump user — SELECT privileges only.
+  user: ditto_dump
+
+  # One of password or password_secret must be set.
+  # Use password_secret in production (AWS Secrets Manager ARN).
+  # Use password for local development only — never commit real passwords.
+  #
+  # password: localdevpassword
+  password_secret: arn:aws:secretsmanager:us-east-1:123456789012:secret:ditto-rds-password
+
+dump:
+  # Cron schedule for automatic dumps. Default: hourly.
+  schedule: "0 * * * *"
+
+  # Local path where the compressed dump file is stored.
+  # The scheduler writes to <path>.tmp then atomically renames to <path>.
+  path: /data/dump/latest.gz
+
+  # Warn (but don't error) if the dump file is older than this many seconds.
+  # Default: 7200 (2 × the default hourly schedule).
+  stale_threshold: 7200
+
+# Auto-destroy copies older than this many seconds.
+# Individual copies can override this with --ttl on copy create.
+copy_ttl_seconds: 7200
+
+# Port range for copy containers. Each copy binds to one port on localhost.
+# Ensure this range doesn't conflict with other services on the host.
+port_pool_start: 5433
+port_pool_end: 5600

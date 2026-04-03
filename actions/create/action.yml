@@ -1,0 +1,30 @@
+name: 'ditto copy create'
+description: 'Provision an ephemeral database copy on a self-hosted ditto runner'
+
+inputs:
+  ttl:
+    description: 'Copy TTL (e.g. 1h, 30m)'
+    required: false
+    default: '2h'
+
+outputs:
+  database_url:
+    description: 'DSN for the provisioned copy'
+    value: ${{ steps.create.outputs.database_url }}
+  copy_id:
+    description: 'Copy ID — pass to attaradev/ditto/actions/delete'
+    value: ${{ steps.create.outputs.copy_id }}
+
+runs:
+  using: composite
+  steps:
+    - id: create
+      shell: bash
+      run: |
+        OUTPUT=$(ditto copy create --format=json --ttl "${{ inputs.ttl }}")
+        COPY_ID=$(echo "$OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['ID'])")
+        CONN=$(echo "$OUTPUT"    | python3 -c "import sys,json; print(json.load(sys.stdin)['ConnectionString'])")
+        echo "::add-mask::${CONN}"
+        echo "database_url=${CONN}" >> "$GITHUB_OUTPUT"
+        echo "copy_id=${COPY_ID}"   >> "$GITHUB_OUTPUT"
+        echo "DATABASE_URL=${CONN}" >> "$GITHUB_ENV"

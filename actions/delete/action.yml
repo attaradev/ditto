@@ -1,0 +1,13 @@
+name: 'ditto copy delete'
+description: 'Destroy an ephemeral database copy'
+
+inputs:
+  copy_id:
+    description: 'Copy ID returned by attaradev/ditto/actions/create'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: ditto copy delete "${{ inputs.copy_id }}" || true
