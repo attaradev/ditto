@@ -141,7 +141,7 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("mariadb: open readiness probe DB: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
