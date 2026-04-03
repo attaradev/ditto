@@ -1,16 +1,20 @@
-## What changed
+# What
 
-<!-- Brief description of the change -->
+<!-- What changes for users, operators, or contributors? -->
 
 ## Why
 
-<!-- Motivation, problem being solved, or issue being fixed -->
+<!-- What problem, risk, or reliability issue does this address? -->
 
-## Testing
+## Risks
+
+<!-- Rollout, compatibility, or operational risk. Write "none" if not applicable. -->
+
+## Validation
 
 - [ ] Unit tests pass (`go test -race ./...`)
 - [ ] Integration tests pass if applicable (`go test -tags integration ./...`)
-- [ ] Manual testing notes (if relevant):
+- [ ] Manual validation notes included when relevant
 
 ## Checklist
 

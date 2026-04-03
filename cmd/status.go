@@ -13,7 +13,7 @@ import (
 func newStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Show replication health and active copies",
+		Short: "Show dump freshness and copy capacity",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatus(cmd)
 		},

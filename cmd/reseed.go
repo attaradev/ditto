@@ -7,9 +7,10 @@ import (
 func newReseedCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reseed",
-		Short: "Rebuild dump from RDS source",
-		Long: `Run an immediate dump of the source database, atomically replacing
-the local dump file on success. Progress is written to stderr.`,
+		Short: "Refresh the local source database dump",
+		Long: `Run an immediate dump of the configured source database and replace the
+local dump only after the new dump completes successfully. Progress is written
+to stderr.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReseed(cmd)
 		},

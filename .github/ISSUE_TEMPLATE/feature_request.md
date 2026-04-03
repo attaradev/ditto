@@ -1,13 +1,15 @@
 ---
 name: Feature request
-about: Suggest an improvement or new capability
+about: Propose an improvement to the ditto developer or operator experience
 labels: enhancement
 ---
 
-**What problem does this solve?**
+# What outcome do you want?
 
-**Proposed solution**
+## What pain or limitation are you hitting today?
 
-**Alternatives considered**
+## Proposed solution
 
-**Additional context**
+## Alternatives considered
+
+## Additional context

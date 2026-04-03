@@ -37,17 +37,16 @@ func NewRootCmd() *cobra.Command {
 
 	root := &cobra.Command{
 		Use:   "ditto",
-		Short: "Ephemeral database copies for CI",
-		Long: `ditto provisions isolated copies of a real database for each test run.
+		Short: "Provision reliable isolated database copies for CI",
+		Long: `ditto provisions clean, isolated database copies for CI and other automated tests.
 
-Each copy is a fresh Docker container, restored from a local dump of the source
-database. Copies are created on demand and destroyed automatically.`,
+Use it when shared staging databases make test runs flaky, schema fidelity matters, and you want production-like database behavior on a self-hosted runner without adding a separate control plane.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
-	root.PersistentFlags().StringVar(&dbPath, "db", defaultDBPath(), "Path to SQLite metadata database")
-	root.PersistentFlags().StringVar(&cfgPath, "config", "", "Path to ditto.yaml (default: ./ditto.yaml)")
+	root.PersistentFlags().StringVar(&dbPath, "db", defaultDBPath(), "Path to the ditto SQLite metadata database")
+	root.PersistentFlags().StringVar(&cfgPath, "config", "", "Path to ditto.yaml (defaults to ./ditto.yaml)")
 
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		// Skip for help/completion.

@@ -13,14 +13,15 @@ import (
 func newDaemonCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "daemon",
-		Short: "Run the dump scheduler and copy expiry loop",
-		Long: `daemon starts the background services:
+		Short: "Keep dumps fresh and clean up expired copies",
+		Long: `daemon keeps ditto ready for CI:
 
-  - Dump scheduler: runs engine.Dump on the configured cron schedule
-  - Copy expiry:    destroys copies older than copy_ttl_seconds (checked every 60s)
-  - Orphan recovery: heals mid-transition copies left by a previous crash
+  - Refreshes the source dump on the configured cron schedule
+  - Deletes isolated database copies after their TTL expires
+  - Recovers copies left mid-transition after a previous crash
 
-The process blocks until SIGTERM or SIGINT.`,
+Run it on the same host that owns Docker and the local dump file. The process
+blocks until SIGTERM or SIGINT.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDaemon(cmd)
 		},

@@ -1,25 +1,29 @@
 ---
 name: Bug report
-about: Something isn't working
+about: Report a reliability, setup, or runtime problem
 labels: bug
 ---
 
-**ditto version**
-<!-- ditto --version -->
+# Impact
 
-**Environment**
+<!-- What did this break or block? -->
+
+## What happened
+
+## Steps to reproduce
+
+## Relevant output
+
+<!-- Include ditto status, ditto copy logs <id>, workflow logs, or any error messages -->
+
+```text
+```
+
+## What you expected
+
+## Environment
+
+- ditto version:
 - OS:
 - Docker version:
 - Go version (if building from source):
-
-**What happened**
-
-**What you expected**
-
-**Steps to reproduce**
-
-**Relevant output**
-<!-- ditto status, ditto copy logs <id>, or any error messages -->
-
-```
-```

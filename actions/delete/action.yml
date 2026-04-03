@@ -1,5 +1,5 @@
 name: 'ditto copy delete'
-description: 'Destroy an ephemeral database copy'
+description: 'Delete an isolated database copy after a job finishes'
 
 inputs:
   copy_id:

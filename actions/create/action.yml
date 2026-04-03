@@ -1,18 +1,18 @@
 name: 'ditto copy create'
-description: 'Provision an ephemeral database copy on a self-hosted ditto runner'
+description: 'Create an isolated database copy for a CI job on a self-hosted ditto runner'
 
 inputs:
   ttl:
-    description: 'Copy TTL (e.g. 1h, 30m)'
+    description: 'How long to keep the copy before automatic cleanup (for example: 1h, 30m)'
     required: false
     default: '2h'
 
 outputs:
   database_url:
-    description: 'DSN for the provisioned copy'
+    description: 'Connection string for the isolated database copy'
     value: ${{ steps.create.outputs.database_url }}
   copy_id:
-    description: 'Copy ID — pass to attaradev/ditto/actions/delete'
+    description: 'Copy ID for cleanup with attaradev/ditto/actions/delete'
     value: ${{ steps.create.outputs.copy_id }}
 
 runs:
