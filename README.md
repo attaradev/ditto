@@ -2,7 +2,7 @@
 
 ![ditto](assets/logo.svg)
 
-[![CI](https://github.com/attaradev/ditto/actions/workflows/ci.yml/badge.svg)](https://github.com/attaradev/ditto/actions/workflows/ci.yml)
+[![CI](https://github.com/attaradev/ditto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/attaradev/ditto/actions/workflows/ci.yml)
 
 Ephemeral database copies for CI. Each test run gets its own isolated copy of the real database —
 same schema, same data shapes, same constraints — created on demand and destroyed when the run ends.
@@ -24,22 +24,22 @@ scheduled dump of the real database.
 
 ## How it works
 
-```text
-RDS Source ──(hourly pg_dump)──▶ /data/dump/latest.gz
-                                         │
-                              ditto copy create
-                                         │
-                                         ▼
-                               Docker container (port 5433)
-                               └─ restored from latest.gz
-                                         │
-                               DATABASE_URL=postgres://…:5433/ditto
-                                         │
-                              your tests run here
-                                         │
-                              ditto copy delete <id>
-                                         │
-                               container destroyed, port freed
+```mermaid
+flowchart TD
+    RDS[(RDS Source)]
+    DUMP["/data/dump/latest.gz"]
+    CMD["ditto copy create"]
+    CTR["Docker container\nport 5433"]
+    TEST["your tests"]
+    DEL["ditto copy delete &lt;id&gt;"]
+    FREE["container destroyed\nport freed"]
+
+    RDS -->|"hourly pg_dump"| DUMP
+    DUMP --> CMD
+    CMD -->|"restore"| CTR
+    CTR -->|"DATABASE_URL=postgres://…:5433/ditto"| TEST
+    TEST --> DEL
+    DEL --> FREE
 ```
 
 A single EC2 host runs the self-hosted GitHub Actions runner and the copy engine. No separate API,
@@ -143,7 +143,7 @@ jobs:
   test:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - id: db
         uses: attaradev/ditto/actions/create@v1
@@ -171,7 +171,7 @@ jobs:
     env:
       DITTO_ENABLED: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: go test ./...
         env:
           DATABASE_URL: ${{ env.DATABASE_URL }}
@@ -292,6 +292,35 @@ go build ./cmd/ditto
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and conventions.
 
 ## Architecture
+
+```mermaid
+graph LR
+    CLI["CLI\ncmd/"]
+    ENG["Engine\ninterface"]
+    PG["postgres"]
+    MY["mariadb"]
+    MGR["Copy Manager\ninternal/copy"]
+    SCH["Dump Scheduler\ninternal/dump"]
+    STR["SQLite Store\ninternal/store"]
+    CFG["Config\ninternal/config"]
+    DOC["Docker API"]
+    RDS[(RDS)]
+    FS[("Dump file\nlatest.gz")]
+
+    CLI --> MGR
+    CLI --> SCH
+    CLI --> STR
+    CLI --> CFG
+    MGR --> ENG
+    MGR --> STR
+    MGR --> DOC
+    SCH --> ENG
+    SCH --> FS
+    ENG --> PG
+    ENG --> MY
+    PG --> RDS
+    MY --> RDS
+```
 
 - [Design document](docs/design.md) — ADRs, component design, data model
 - `engine/engine.go` — the Engine interface every database backend implements
