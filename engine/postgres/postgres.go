@@ -7,17 +7,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
-	"sync"
 	"time"
 
 	"github.com/attaradev/ditto/engine"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/attaradev/ditto/internal/secret"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx stdlib driver for database/sql
 )
 
@@ -27,8 +24,7 @@ func init() {
 
 // Engine implements engine.Engine for PostgreSQL.
 type Engine struct {
-	// secretCache caches resolved AWS Secrets Manager passwords.
-	secretCache secretCache
+	secretCache secret.Cache
 }
 
 func (e *Engine) Name() string { return "postgres" }
@@ -44,7 +40,7 @@ func (e *Engine) ConnectionString(host string, port int) string {
 // subprocess. The password is passed via PGPASSWORD to avoid it appearing
 // in process listings.
 func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath string) error {
-	password, err := e.resolvePassword(ctx, src)
+	password, err := e.secretCache.Resolve(ctx, src.PasswordSecret, src.Password)
 	if err != nil {
 		return fmt.Errorf("postgres: resolve password: %w", err)
 	}
@@ -132,94 +128,24 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 		return fmt.Errorf("postgres: timed out waiting for TCP on port %d", port)
 	}
 
-	// Confirm Postgres is accepting queries, not just TCP connections.
+	// Open one connection pool and reuse it across iterations.
 	dsn := fmt.Sprintf("postgres://ditto:ditto@localhost:%d/ditto?sslmode=disable", port)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return fmt.Errorf("postgres: open readiness probe DB: %w", err)
+	}
+	defer db.Close()
+
 	for time.Now().Before(deadline) {
-		db, err := sql.Open("pgx", dsn)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, err := db.ExecContext(ctx, "SELECT 1")
+		cancel()
 		if err == nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_, pingErr := db.ExecContext(ctx, "SELECT 1")
-			cancel()
-			closeErr := db.Close()
-			if pingErr == nil {
-				if closeErr != nil {
-					return fmt.Errorf("postgres: close readiness probe DB: %w", closeErr)
-				}
-				return nil
-			}
+			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("postgres: timed out waiting for SELECT 1 on port %d", port)
-}
-
-// resolvePassword returns the password for src. If PasswordSecret is set it
-// fetches the value from AWS Secrets Manager (with a 5-minute cache).
-// Otherwise it returns Password directly.
-func (e *Engine) resolvePassword(ctx context.Context, src engine.SourceConfig) (string, error) {
-	if src.PasswordSecret == "" {
-		return src.Password, nil
-	}
-	return e.secretCache.get(ctx, src.PasswordSecret)
-}
-
-// secretCache is a simple time-bounded cache for a single Secrets Manager
-// secret value.
-type secretCache struct {
-	mu        sync.RWMutex
-	arn       string
-	value     string
-	fetchedAt time.Time
-}
-
-func (c *secretCache) get(ctx context.Context, arn string) (string, error) {
-	const ttl = 5 * time.Minute
-
-	c.mu.RLock()
-	if c.arn == arn && time.Since(c.fetchedAt) < ttl {
-		v := c.value
-		c.mu.RUnlock()
-		return v, nil
-	}
-	c.mu.RUnlock()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// Re-check after acquiring write lock.
-	if c.arn == arn && time.Since(c.fetchedAt) < ttl {
-		return c.value, nil
-	}
-
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return "", fmt.Errorf("load AWS config: %w", err)
-	}
-	svc := secretsmanager.NewFromConfig(cfg)
-	out, err := svc.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
-		SecretId: &arn,
-	})
-	if err != nil {
-		return "", fmt.Errorf("get secret %s: %w", arn, err)
-	}
-
-	raw := ""
-	if out.SecretString != nil {
-		raw = *out.SecretString
-	}
-
-	// The secret may be a raw string or a JSON object with a "password" key.
-	password := raw
-	var obj map[string]string
-	if json.Unmarshal([]byte(raw), &obj) == nil {
-		if p, ok := obj["password"]; ok {
-			password = p
-		}
-	}
-
-	c.arn = arn
-	c.value = password
-	c.fetchedAt = time.Now()
-	return password, nil
 }
 
 // Ensure Engine satisfies the interface at compile time.

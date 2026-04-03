@@ -8,17 +8,14 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
-	"sync"
 	"time"
 
 	"github.com/attaradev/ditto/engine"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/attaradev/ditto/internal/secret"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -28,7 +25,7 @@ func init() {
 
 // Engine implements engine.Engine for MariaDB/MySQL.
 type Engine struct {
-	secretCache secretCache
+	secretCache secret.Cache
 }
 
 func (e *Engine) Name() string { return "mariadb" }
@@ -40,8 +37,9 @@ func (e *Engine) ConnectionString(host string, port int) string {
 }
 
 // Dump runs mysqldump against src and writes a compressed dump to destPath.
+// The password is passed via MYSQL_PWD to avoid it appearing in process listings.
 func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath string) error {
-	password, err := e.resolvePassword(ctx, src)
+	password, err := e.secretCache.Resolve(ctx, src.PasswordSecret, src.Password)
 	if err != nil {
 		return fmt.Errorf("mariadb: resolve password: %w", err)
 	}
@@ -137,86 +135,24 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 		return fmt.Errorf("mariadb: timed out waiting for TCP on port %d", port)
 	}
 
+	// Open one connection pool and reuse it across iterations.
 	dsn := fmt.Sprintf("ditto:ditto@tcp(localhost:%d)/ditto", port)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return fmt.Errorf("mariadb: open readiness probe DB: %w", err)
+	}
+	defer db.Close()
+
 	for time.Now().Before(deadline) {
-		db, err := sql.Open("mysql", dsn)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, err := db.ExecContext(ctx, "SELECT 1")
+		cancel()
 		if err == nil {
-			ctx2, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_, pingErr := db.ExecContext(ctx2, "SELECT 1")
-			cancel()
-			closeErr := db.Close()
-			if pingErr == nil {
-				if closeErr != nil {
-					return fmt.Errorf("mariadb: close readiness probe DB: %w", closeErr)
-				}
-				return nil
-			}
+			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("mariadb: timed out waiting for SELECT 1 on port %d", port)
-}
-
-func (e *Engine) resolvePassword(ctx context.Context, src engine.SourceConfig) (string, error) {
-	if src.PasswordSecret == "" {
-		return src.Password, nil
-	}
-	return e.secretCache.get(ctx, src.PasswordSecret)
-}
-
-type secretCache struct {
-	mu        sync.RWMutex
-	arn       string
-	value     string
-	fetchedAt time.Time
-}
-
-func (c *secretCache) get(ctx context.Context, arn string) (string, error) {
-	const ttl = 5 * time.Minute
-
-	c.mu.RLock()
-	if c.arn == arn && time.Since(c.fetchedAt) < ttl {
-		v := c.value
-		c.mu.RUnlock()
-		return v, nil
-	}
-	c.mu.RUnlock()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.arn == arn && time.Since(c.fetchedAt) < ttl {
-		return c.value, nil
-	}
-
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return "", fmt.Errorf("load AWS config: %w", err)
-	}
-	svc := secretsmanager.NewFromConfig(cfg)
-	out, err := svc.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
-		SecretId: &arn,
-	})
-	if err != nil {
-		return "", fmt.Errorf("get secret %s: %w", arn, err)
-	}
-
-	raw := ""
-	if out.SecretString != nil {
-		raw = *out.SecretString
-	}
-
-	password := raw
-	var obj map[string]string
-	if json.Unmarshal([]byte(raw), &obj) == nil {
-		if p, ok := obj["password"]; ok {
-			password = p
-		}
-	}
-
-	c.arn = arn
-	c.value = password
-	c.fetchedAt = time.Now()
-	return password, nil
 }
 
 var _ engine.Engine = (*Engine)(nil)

@@ -77,6 +77,10 @@ var migrations = []string{
 
 	`CREATE INDEX IF NOT EXISTS idx_copies_status ON copies(status)`,
 	`CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_type, entity_id)`,
+
+	// v2: covering index for the TTL expiry query (status + created_at + ttl_seconds)
+	// so ListExpired() does not require a full-table scan.
+	`CREATE INDEX IF NOT EXISTS idx_copies_ttl ON copies(status, created_at, ttl_seconds)`,
 }
 
 // migrate applies any migrations that have not yet been recorded in

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/attaradev/ditto/engine"
@@ -258,7 +259,7 @@ func (m *Manager) RecoverOrphans(ctx context.Context) error {
 // startContainer creates and starts a Docker container for the copy.
 // It bind-mounts the dump directory read-only at /dump.
 func (m *Manager) startContainer(ctx context.Context, id string, port int, dumpPath string) (string, error) {
-	dumpDir := dumpDir(dumpPath)
+	dumpDir := filepath.Dir(dumpPath)
 	portStr := fmt.Sprintf("%d", port)
 	exposedPort := nat.Port(portStr + "/tcp")
 
@@ -327,15 +328,6 @@ func containerEnv(engineName string) []string {
 }
 
 func containerName(id string) string { return "ditto-" + id }
-
-func dumpDir(dumpPath string) string {
-	for i := len(dumpPath) - 1; i >= 0; i-- {
-		if dumpPath[i] == '/' || dumpPath[i] == os.PathSeparator {
-			return dumpPath[:i]
-		}
-	}
-	return "."
-}
 
 func checkDump(path string, staleThreshold int) error {
 	info, err := os.Stat(path)

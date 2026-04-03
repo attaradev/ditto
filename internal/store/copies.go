@@ -156,9 +156,10 @@ func (s *CopyStore) ListExpired() ([]*Copy, error) {
 		       gha_run_id, gha_job_name, error_message,
 		       created_at, ready_at, destroyed_at, ttl_seconds
 		FROM copies
-		WHERE status IN ('ready', 'in_use')
+		WHERE status IN (?, ?)
 		  AND datetime(created_at, '+' || ttl_seconds || ' seconds') < datetime('now')
-		ORDER BY created_at ASC`)
+		ORDER BY created_at ASC`,
+		string(StatusReady), string(StatusInUse))
 	if err != nil {
 		return nil, fmt.Errorf("copy.ListExpired: %w", err)
 	}
