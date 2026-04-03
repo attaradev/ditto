@@ -5,6 +5,14 @@
 #   DITTO_SOURCE_HOST=other.rds.example.com
 
 source:
+  # Option A — database URL (engine, host, port, database, user, and password
+  # are all inferred from the URL). Supported schemes: postgres, postgresql,
+  # mysql, mariadb. Individual fields below override URL values if both are set.
+  #
+  # url: postgres://ditto_dump:secret@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp
+
+  # Option B — individual fields.
+
   # Database engine. Supported: "postgres", "mariadb"
   engine: postgres
 
