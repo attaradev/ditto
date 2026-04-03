@@ -4,22 +4,21 @@ linters:
   enable:
     - govet
     - errcheck
-    - staticcheck  # absorbs gosimple and stylecheck
+    - staticcheck
     - ineffassign
     - unused
     - gosec
     - misspell
+  exclusions:
+    rules:
+      # G304: file path from variable - intentional in dump scheduler and config loading.
+      - linters: [gosec]
+        text: "G304"
+      # Test files are exempt from errcheck (test helpers often ignore cleanup errors).
+      - path: "_test\\.go"
+        linters: [errcheck]
 
 formatters:
   enable:
     - gofmt
     - goimports
-
-issues:
-  exclude-rules:
-    # G304: file path from variable — intentional in dump scheduler and config loading.
-    - linters: [gosec]
-      text: "G304"
-    # Test files are exempt from errcheck (test helpers often ignore cleanup errors).
-    - path: "_test\\.go"
-      linters: [errcheck]
