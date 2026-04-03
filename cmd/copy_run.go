@@ -7,10 +7,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/spf13/cobra"
 	"github.com/attaradev/ditto/internal/copy"
 	"github.com/attaradev/ditto/internal/store"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/spf13/cobra"
 )
 
 func runCopyCreate(cmd *cobra.Command, ttl, label, format string) error {

@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/attaradev/ditto/engine"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/attaradev/ditto/engine"
 )
 
 func init() {

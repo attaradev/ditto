@@ -7,20 +7,20 @@ import (
 	"fmt"
 	"os"
 
-	isatty "github.com/mattn/go-isatty"
-	"github.com/spf13/cobra"
 	"github.com/attaradev/ditto/engine"
 	"github.com/attaradev/ditto/internal/config"
 	copypkg "github.com/attaradev/ditto/internal/copy"
 	dumppkg "github.com/attaradev/ditto/internal/dump"
 	dittostore "github.com/attaradev/ditto/internal/store"
+	isatty "github.com/mattn/go-isatty"
+	"github.com/spf13/cobra"
 )
 
 // contextKey is the type for values stored in cobra command contexts.
 type contextKey int
 
 const (
-	keyDB          contextKey = iota
+	keyDB contextKey = iota
 	keyCopyStore
 	keyEventStore
 	keyManager

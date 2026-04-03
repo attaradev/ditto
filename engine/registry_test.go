@@ -11,12 +11,14 @@ import (
 
 type stubEngine struct{ name string }
 
-func (s *stubEngine) Name() string                                                      { return s.name }
-func (s *stubEngine) ContainerImage() string                                            { return "stub:latest" }
-func (s *stubEngine) ConnectionString(host string, port int) string                    { return fmt.Sprintf("stub://%s:%d", host, port) }
-func (s *stubEngine) Dump(_ context.Context, _ engine.SourceConfig, _ string) error   { return nil }
-func (s *stubEngine) Restore(_ context.Context, _ string, _ int) error                { return nil }
-func (s *stubEngine) WaitReady(_ int, _ time.Duration) error                           { return nil }
+func (s *stubEngine) Name() string           { return s.name }
+func (s *stubEngine) ContainerImage() string { return "stub:latest" }
+func (s *stubEngine) ConnectionString(host string, port int) string {
+	return fmt.Sprintf("stub://%s:%d", host, port)
+}
+func (s *stubEngine) Dump(_ context.Context, _ engine.SourceConfig, _ string) error { return nil }
+func (s *stubEngine) Restore(_ context.Context, _ string, _ int) error              { return nil }
+func (s *stubEngine) WaitReady(_ int, _ time.Duration) error                        { return nil }
 
 func TestRegistryRegisterAndGet(t *testing.T) {
 	e := &stubEngine{name: "stub-" + t.Name()}

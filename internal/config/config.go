@@ -22,7 +22,7 @@ type Config struct {
 
 // Source holds connection parameters for the RDS source database.
 type Source struct {
-	URL            string `mapstructure:"url"`             // DSN alternative to individual fields
+	URL            string `mapstructure:"url"` // DSN alternative to individual fields
 	Engine         string `mapstructure:"engine"`
 	Host           string `mapstructure:"host"`
 	Port           int    `mapstructure:"port"`

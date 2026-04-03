@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/robfig/cron/v3"
 	"github.com/attaradev/ditto/engine"
 	"github.com/attaradev/ditto/internal/config"
 	"github.com/attaradev/ditto/internal/store"
+	"github.com/robfig/cron/v3"
 )
 
 // Scheduler runs engine.Dump on a cron schedule and atomically replaces the

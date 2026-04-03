@@ -4,14 +4,16 @@ linters:
   enable:
     - govet
     - errcheck
-    - staticcheck
-    - gosimple
+    - staticcheck  # absorbs gosimple and stylecheck
     - ineffassign
     - unused
-    - gofmt
-    - goimports
     - gosec
     - misspell
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 
 issues:
   exclude-rules:

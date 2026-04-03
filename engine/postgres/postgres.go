@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/attaradev/ditto/engine"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx stdlib driver for database/sql
-	"github.com/attaradev/ditto/engine"
 )
 
 func init() {

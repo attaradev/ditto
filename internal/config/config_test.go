@@ -66,14 +66,14 @@ func TestConfigMissingRequired(t *testing.T) {
 
 func TestConfigSourceURL(t *testing.T) {
 	tests := []struct {
-		name        string
-		url         string
-		wantEngine  string
-		wantHost    string
-		wantPort    int
-		wantDB      string
-		wantUser    string
-		wantPass    string
+		name       string
+		url        string
+		wantEngine string
+		wantHost   string
+		wantPort   int
+		wantDB     string
+		wantUser   string
+		wantPass   string
 	}{
 		{
 			name:       "postgres scheme",
