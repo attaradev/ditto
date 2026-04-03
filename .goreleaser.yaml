@@ -39,6 +39,45 @@ archives:
       - ditto.yaml.example
       - hooks/
 
+brews:
+  - repository:
+      owner: attaradev
+      name: homebrew-ditto
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: ditto-bot
+      email: mpyebattara@gmail.com
+    homepage: https://github.com/attaradev/ditto
+    description: "A clean database for every run — isolated Postgres and MariaDB copies for tests, migrations, and local dev"
+    license: MIT
+    skip_upload: auto
+    install: |
+      bin.install "ditto"
+    test: |
+      system "#{bin}/ditto", "--version"
+
+nfpms:
+  - id: ditto
+    builds: [ditto]
+    package_name: ditto
+    vendor: Attara
+    homepage: https://github.com/attaradev/ditto
+    maintainer: Mike Attara <mpyebattara@gmail.com>
+    description: "A clean database for every run — isolated Postgres and MariaDB copies for tests, migrations, and local dev"
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    contents:
+      - src: ./ditto.yaml.example
+        dst: /etc/ditto/ditto.yaml.example
+        type: config|noreplace
+      - src: ./hooks/pre-job.sh
+        dst: /usr/share/ditto/hooks/pre-job.sh
+      - src: ./hooks/post-job.sh
+        dst: /usr/share/ditto/hooks/post-job.sh
+
 changelog:
   sort: asc
   groups:

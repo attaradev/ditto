@@ -4,14 +4,12 @@
 
 [![CI](https://github.com/attaradev/ditto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/attaradev/ditto/actions/workflows/ci.yml)
 
-## Reliable database tests for CI
+## A clean database for every run
 
-ditto provisions isolated Postgres or MariaDB copies from a scheduled dump, so
-every test run gets a clean database instead of fighting shared staging state.
-
-- Eliminate flaky tests caused by shared databases
-- Test against real schema, constraints, and data shapes
-- Run on a self-hosted runner without adding a control plane
+ditto provisions throwaway Postgres or MariaDB copies from a scheduled dump.
+Each run—whether a test suite, a migration dry-run, a load test, or a local
+debugging session—gets an isolated, production-faithful database. No shared
+state. No leftover mutations. No coordination.
 
 ```sh
 COPY=$(ditto copy create --format=json)
@@ -22,46 +20,95 @@ go test ./...
 ditto copy delete "$COPY_ID"
 ```
 
-## Why teams use ditto
+## Use cases
 
-Database-backed CI gets unreliable when every job fights for the same staging
-database. One run mutates data for the next. Seed fixtures drift away from
-production reality. Transaction cleanup breaks as soon as background jobs,
-multiple connections, or out-of-process workers enter the picture.
+| Use case | What ditto does |
+| --- | --- |
+| **CI test isolation** | Each job gets a clean throwaway copy; no shared staging contention |
+| **Migration dry-runs** | Validate `migrate up` against real data before merge |
+| **Parallel test sharding** | Each shard worker calls `copy create`; the port pool handles allocation |
+| **Local dev sandbox** | Every developer gets their own copy; no more "who broke staging?" |
+| **Load and perf testing** | Mutations stay in the throwaway copy; staging is never polluted |
+| **Incident reproduction** | Restore a recent dump locally to reproduce and debug production bugs |
 
-ditto gives each run a clean test database restored from a scheduled source
-dump. You keep production-like schema and data shapes, while avoiding another
-API service, control plane, or long-lived shared test environment.
+## The problem ditto solves
+
+Databases become a reliability problem when multiple runs share the same
+environment. Three root causes account for most of the pain:
+
+**Shared mutation.** One run writes data that the next run reads. Assertions
+fail based on who ran last, not on whether the code is correct.
+
+**Schema drift.** Seed fixtures and test factories diverge from production
+shapes over time. Tests pass on fabricated data and fail on real data.
+
+**Rollback fragility.** Transaction cleanup breaks under background jobs,
+multiple connections, or out-of-process workers—the exact conditions that
+production runs under.
+
+ditto eliminates all three. Each run gets a copy restored from a scheduled
+source dump, with production-like schema and data shapes, and no connection
+to the next run's state.
 
 When ditto is a good fit:
 
-- You already run CI on self-hosted runners.
-- Your tests need real database behavior, not mocked persistence.
-- Shared staging contention or schema drift is already hurting reliability.
+- You run on self-hosted infrastructure with Docker available.
+- Your tests, migrations, or tools need real database behavior—DDL, constraints,
+  triggers—not mocked persistence.
+- Shared staging contention or schema drift is already costing you reliability.
+- You want sub-minute database provisioning without standing up extra infra.
 
-## Quick start
+## Install
 
-You will need:
+**Homebrew** (macOS and Linux):
 
-- Go 1.26+
-- Docker on the same host as the CLI
-- `pg_dump` and `pg_restore` for Postgres sources
-- `mysqldump` and `mysql` for MariaDB sources
-- AWS credentials with `secretsmanager:GetSecretValue` if you store passwords in Secrets Manager
+```bash
+brew tap attaradev/ditto
+brew install ditto
+```
 
-Install the CLI:
+**Debian / Ubuntu** — download the `.deb` from the
+[latest release](https://github.com/attaradev/ditto/releases/latest):
+
+```bash
+sudo dpkg -i ditto_<version>_linux_amd64.deb
+```
+
+**RPM** (Fedora / RHEL / Amazon Linux):
+
+```bash
+sudo rpm -i ditto_<version>_linux_amd64.rpm
+```
+
+**Alpine**:
+
+```bash
+apk add --allow-untrusted ditto_<version>_linux_amd64.apk
+```
+
+**Go install**:
 
 ```bash
 go install github.com/attaradev/ditto/cmd/ditto@latest
 ```
 
-Or build from source:
+**Build from source**:
 
 ```bash
 git clone https://github.com/attaradev/ditto
 cd ditto
 go build -o /usr/local/bin/ditto ./cmd/ditto
 ```
+
+## Quick start
+
+**Prerequisites:**
+
+- Docker on the same host as the CLI
+- `pg_dump` / `pg_restore` for Postgres sources
+- `mysqldump` / `mysql` for MariaDB sources
+- AWS credentials with `secretsmanager:GetSecretValue` if you store passwords
+  in Secrets Manager
 
 Create `ditto.yaml` in the current directory or in `~/.ditto/ditto.yaml`:
 
@@ -84,7 +131,9 @@ port_pool_start: 5433
 port_pool_end: 5600
 ```
 
-Create a clean test database, run your suite, and clean it up:
+### CI test isolation
+
+Create a clean copy, run your suite, tear it down:
 
 ```sh
 COPY=$(ditto copy create --format=json)
@@ -92,6 +141,37 @@ export DATABASE_URL=$(echo "$COPY" | jq -r '.ConnectionString')
 COPY_ID=$(echo "$COPY" | jq -r '.ID')
 
 go test ./...
+ditto copy delete "$COPY_ID"
+```
+
+### Migration dry-runs
+
+Validate a migration against real production-shaped data before merge:
+
+```sh
+COPY=$(ditto copy create --format=json)
+export DATABASE_URL=$(echo "$COPY" | jq -r '.ConnectionString')
+COPY_ID=$(echo "$COPY" | jq -r '.ID')
+
+migrate -database "$DATABASE_URL" up
+# assert schema, row counts, or constraint behavior
+ditto copy delete "$COPY_ID"
+```
+
+### Local developer sandbox
+
+Point `~/.ditto/ditto.yaml` at a shared dump path (NFS mount, S3 sync, or
+a local file from `ditto reseed`). Each developer runs:
+
+```sh
+ditto copy create --format=pipe
+# postgres://ditto:ditto@127.0.0.1:5433/ditto
+```
+
+No coordination needed. Every developer gets their own isolated copy on a
+dedicated port. Tear it down when done:
+
+```sh
 ditto copy delete "$COPY_ID"
 ```
 
@@ -115,14 +195,14 @@ flowchart TD
     DEL --> FREE
 ```
 
-ditto typically runs on the same self-hosted runner host that owns Docker and
-the local dump file. One SQLite database tracks copy state. There is no
-separate control plane, and the only long-running process is `ditto daemon` if
-you want scheduled dumps and TTL-based cleanup.
+ditto runs on the same host that owns Docker and the local dump file. One
+SQLite database tracks copy state. There is no separate control plane—the
+only long-running process is `ditto daemon`, which handles scheduled dumps
+and TTL-based cleanup.
 
 ## GitHub Actions integration
 
-Use the composite actions when you want explicit setup and cleanup steps in a job:
+Use the composite actions for explicit setup and teardown steps in a job:
 
 ```yaml
 jobs:
@@ -146,10 +226,10 @@ jobs:
           copy_id: ${{ steps.db.outputs.copy_id }}
 ```
 
-If your runner is already dedicated to ditto-backed jobs, set `DITTO_ENABLED:
-true` to use the pre-job and post-job hooks instead. The pre-job hook creates
-the isolated database copy and sets `DATABASE_URL`. The post-job hook deletes
-it even when the job fails.
+If your runner is dedicated to ditto-backed jobs, set `DITTO_ENABLED: true`
+to use the pre-job and post-job hooks instead. The pre-job hook creates the
+isolated copy and exports `DATABASE_URL`; the post-job hook deletes it even
+when the job fails.
 
 ```yaml
 jobs:
@@ -166,7 +246,8 @@ jobs:
 
 ## Configuration
 
-Use individual fields in `ditto.yaml` when you want explicit control over engine, host, and credentials:
+Use individual fields in `ditto.yaml` for explicit control over engine, host,
+and credentials:
 
 ```yaml
 source:
@@ -187,7 +268,7 @@ port_pool_start: 5433
 port_pool_end: 5600
 ```
 
-For local development, you can use `password` instead of `password_secret`:
+For local development, use `password` instead of `password_secret`:
 
 ```yaml
 source:
@@ -206,19 +287,19 @@ dots become underscores:
 DITTO_SOURCE_HOST=other.rds.amazonaws.com ditto copy create
 ```
 
-If you prefer to provide the source in a single value, ditto also supports
+To supply the source as a single connection string, ditto also accepts
 `source.url` for Postgres, PostgreSQL, MySQL, and MariaDB DSNs.
 
 ## Operational model
 
-ditto is designed for teams already running self-hosted runners. A typical
-setup has one host running the GitHub Actions runner, Docker, the local dump
-file, and the SQLite metadata database. `ditto daemon` keeps the dump fresh
-and cleans up expired copies.
+ditto is designed for teams already running self-hosted infrastructure. A
+typical setup has one host running the GitHub Actions runner, Docker, the
+local dump file, and the SQLite metadata database. `ditto daemon` keeps the
+dump fresh and removes expired copies automatically.
 
 ### Runner setup
 
-Install the hooks on the EC2 host:
+Install the hooks on the host:
 
 ```bash
 cp hooks/pre-job.sh  /home/runner/hooks/pre-job.sh
@@ -242,7 +323,8 @@ usermod -aG docker runner
 
 ### Keep dumps fresh
 
-Run `ditto daemon` as a systemd service when you want scheduled dumps and automatic cleanup of expired copies:
+Run `ditto daemon` as a systemd service for scheduled dumps and automatic
+cleanup of expired copies:
 
 ```ini
 [Unit]
@@ -267,10 +349,13 @@ Or run a standalone cron job for just the dump:
 
 ## Security and data handling
 
-- Source database passwords can come from AWS Secrets Manager, and ditto does not persist them in SQLite.
-- Copy containers bind to `127.0.0.1`, so they are local to the runner host.
-- Copies may contain real production data, so disk encryption and runner access control still matter.
-- Access to the Docker socket is effectively root-level access on the host and should be tightly restricted.
+- Source database passwords can be pulled from AWS Secrets Manager; ditto
+  never persists them in SQLite.
+- Copy containers bind to `127.0.0.1`, keeping them local to the host.
+- Copies may contain real production data—disk encryption and host access
+  control still matter.
+- Access to the Docker socket is effectively root-level access on the host;
+  restrict it accordingly.
 
 See [SECURITY.md](SECURITY.md) for the full security model and disclosure policy.
 
@@ -321,7 +406,8 @@ func (e *Engine) Name() string { return "mysql" }
 // ... implement remaining 5 methods
 ```
 
-No changes to core dispatch are required beyond registering the engine and importing it in the CLI entrypoint.
+No changes to core dispatch are required beyond registering the engine and
+importing it in the CLI entrypoint.
 
 ### Development
 
@@ -336,11 +422,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and conventions.
 
 ### Repository landmarks
 
-- `cmd/` - CLI commands and the main entrypoint
-- `engine/` - the engine interface and database-specific implementations
-- `internal/copy/` - isolated copy lifecycle and port allocation
-- `internal/dump/` - scheduled source dumps with atomic file replacement
-- `internal/store/` - SQLite metadata for copies and lifecycle events
+- `cmd/` — CLI commands and the main entrypoint
+- `engine/` — the engine interface and database-specific implementations
+- `internal/copy/` — isolated copy lifecycle and port allocation
+- `internal/dump/` — scheduled source dumps with atomic file replacement
+- `internal/store/` — SQLite metadata for copies and lifecycle events
 
 ## License
 
