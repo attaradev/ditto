@@ -15,9 +15,20 @@ type Config struct {
 	Source Source `mapstructure:"source"`
 	Dump   Dump   `mapstructure:"dump"`
 
-	CopyTTLSeconds int `mapstructure:"copy_ttl_seconds"`
-	PortPoolStart  int `mapstructure:"port_pool_start"`
-	PortPoolEnd    int `mapstructure:"port_pool_end"`
+	CopyTTLSeconds int    `mapstructure:"copy_ttl_seconds"`
+	PortPoolStart  int    `mapstructure:"port_pool_start"`
+	PortPoolEnd    int    `mapstructure:"port_pool_end"`
+	WarmPoolSize   int          `mapstructure:"warm_pool_size"`  // 0 = disabled (default)
+	CopyImage      string       `mapstructure:"copy_image"`      // optional Docker image override
+	Server         ServerConfig `mapstructure:"server"`
+	Obfuscation    Obfuscation  `mapstructure:"obfuscation"`
+}
+
+// ServerConfig holds HTTP server and authentication settings for ditto serve.
+type ServerConfig struct {
+	Addr        string `mapstructure:"addr"`          // listen address, default ":8080"
+	Token       string `mapstructure:"token"`         // plaintext Bearer token (dev only)
+	TokenSecret string `mapstructure:"token_secret"`  // secret reference: env:VAR, file:/path, or arn:aws:...
 }
 
 // Source holds connection parameters for the RDS source database.
@@ -29,7 +40,24 @@ type Source struct {
 	Database       string `mapstructure:"database"`
 	User           string `mapstructure:"user"`
 	Password       string `mapstructure:"password"`        // plain password (dev only)
-	PasswordSecret string `mapstructure:"password_secret"` // AWS Secrets Manager ARN
+	PasswordSecret string `mapstructure:"password_secret"` // secret reference: env:VAR, file:/path, or arn:aws:...
+}
+
+// Obfuscation holds post-restore PII scrubbing rules applied to every copy.
+type Obfuscation struct {
+	Rules []ObfuscationRule `mapstructure:"rules"`
+}
+
+// ObfuscationRule describes how a single table column should be scrubbed.
+// Strategies: nullify, redact, mask, hash, replace.
+type ObfuscationRule struct {
+	Table    string `mapstructure:"table"`
+	Column   string `mapstructure:"column"`
+	Strategy string `mapstructure:"strategy"` // nullify | redact | mask | hash | replace
+	With     string `mapstructure:"with"`      // redact: replacement text (default "[redacted]")
+	MaskChar string `mapstructure:"mask_char"` // mask: character to use (default "*")
+	KeepLast int    `mapstructure:"keep_last"` // mask: preserve trailing N characters
+	Type     string `mapstructure:"type"`      // replace: data type — email | name | phone | ip | url | uuid
 }
 
 // Dump controls the dump scheduler.
@@ -54,6 +82,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("dump.schedule", "0 * * * *")
 	v.SetDefault("dump.path", "/data/dump/latest.gz")
 	v.SetDefault("dump.stale_threshold", 7200)
+	v.SetDefault("warm_pool_size", 0)
+	v.SetDefault("server.addr", ":8080")
 
 	v.SetEnvPrefix("DITTO")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -144,7 +174,7 @@ func applyPortDefault(src *Source) {
 	switch src.Engine {
 	case "postgres":
 		src.Port = 5432
-	case "mariadb":
+	case "mysql":
 		src.Port = 3306
 	}
 }
@@ -154,8 +184,8 @@ func engineFromScheme(scheme string) (string, error) {
 	switch strings.ToLower(scheme) {
 	case "postgres", "postgresql":
 		return "postgres", nil
-	case "mysql", "mariadb":
-		return "mariadb", nil
+	case "mysql", "mariadb": // mariadb DSN scheme accepted as alias
+		return "mysql", nil
 	default:
 		return "", fmt.Errorf("unsupported scheme %q (supported: postgres, postgresql, mysql, mariadb)", scheme)
 	}
@@ -181,6 +211,44 @@ func validate(cfg *Config) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: missing required fields: %v", missing)
+	}
+	return validateObfuscation(cfg.Obfuscation.Rules)
+}
+
+var validStrategies = map[string]bool{
+	"nullify": true,
+	"redact":  true,
+	"mask":    true,
+	"hash":    true,
+	"replace": true,
+}
+
+var validReplaceTypes = map[string]bool{
+	"email": true,
+	"name":  true,
+	"phone": true,
+	"ip":    true,
+	"url":   true,
+	"uuid":  true,
+}
+
+func validateObfuscation(rules []ObfuscationRule) error {
+	for i, r := range rules {
+		if r.Table == "" {
+			return fmt.Errorf("config: obfuscation rule %d: table is required", i)
+		}
+		if r.Column == "" {
+			return fmt.Errorf("config: obfuscation rule %d: column is required", i)
+		}
+		if !validStrategies[r.Strategy] {
+			return fmt.Errorf("config: obfuscation rule %d: unknown strategy %q (use: nullify, redact, mask, hash)", i, r.Strategy)
+		}
+		if r.MaskChar != "" && len([]rune(r.MaskChar)) != 1 {
+			return fmt.Errorf("config: obfuscation rule %d: mask_char must be a single character", i)
+		}
+		if r.Strategy == "replace" && !validReplaceTypes[r.Type] {
+			return fmt.Errorf("config: obfuscation rule %d: replace strategy requires type (email, name, phone, ip, url, uuid)", i)
+		}
 	}
 	return nil
 }

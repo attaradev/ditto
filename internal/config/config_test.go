@@ -101,11 +101,11 @@ func TestConfigSourceURL(t *testing.T) {
 			wantPass:   "pass",
 		},
 		{
-			name: "mysql scheme maps to mariadb engine",
+			name: "mysql scheme maps to mysql engine",
 			url: func() string {
 				return testSourceURL("mysql", "root", "pass", "127.0.0.1", 3306, "app")
 			},
-			wantEngine: "mariadb",
+			wantEngine: "mysql",
 			wantHost:   "127.0.0.1",
 			wantPort:   3306,
 			wantDB:     "app",
@@ -113,11 +113,11 @@ func TestConfigSourceURL(t *testing.T) {
 			wantPass:   "pass",
 		},
 		{
-			name: "mariadb scheme",
+			name: "mariadb scheme maps to mysql engine",
 			url: func() string {
 				return testSourceURL("mariadb", "user", "pass", "db.example.com", 3307, "mydb")
 			},
-			wantEngine: "mariadb",
+			wantEngine: "mysql",
 			wantHost:   "db.example.com",
 			wantPort:   3307,
 			wantDB:     "mydb",
@@ -170,7 +170,7 @@ func TestConfigSourceURLExplicitFieldsWin(t *testing.T) {
 	content := fmt.Sprintf(`
 source:
   url: %s
-  engine: mariadb
+  engine: mysql
   host: explicit-host.example.com
   user: explicit-user
   password: explicit-pass
@@ -185,8 +185,8 @@ source:
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.Source.Engine != "mariadb" {
-		t.Errorf("Engine: got %q, want mariadb (explicit wins)", cfg.Source.Engine)
+	if cfg.Source.Engine != "mysql" {
+		t.Errorf("Engine: got %q, want mysql (explicit wins)", cfg.Source.Engine)
 	}
 	if cfg.Source.Host != "explicit-host.example.com" {
 		t.Errorf("Host: got %q, want explicit-host.example.com", cfg.Source.Host)

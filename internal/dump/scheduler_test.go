@@ -23,7 +23,7 @@ func (d *dumpMock) Name() string                                     { return "m
 func (d *dumpMock) ContainerImage() string                           { return "mock:latest" }
 func (d *dumpMock) ConnectionString(host string, port int) string    { return "mock://" }
 func (d *dumpMock) WaitReady(_ int, _ time.Duration) error           { return nil }
-func (d *dumpMock) Restore(_ context.Context, _ string, _ int) error { return nil }
+func (d *dumpMock) Restore(_ context.Context, _ string, _ string) error { return nil }
 func (d *dumpMock) Dump(_ context.Context, _ engine.SourceConfig, dest string) error {
 	if d.dumpErr != nil {
 		return d.dumpErr

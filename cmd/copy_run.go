@@ -4,21 +4,80 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
-	"github.com/attaradev/ditto/internal/copy"
+	copypkg "github.com/attaradev/ditto/internal/copy"
 	"github.com/attaradev/ditto/internal/store"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
 
-func runCopyCreate(cmd *cobra.Command, ttl, label, format string) error {
-	mgr := managerFromContext(cmd)
+// copyClientFromContext returns an HTTPClient when --server is set, or the
+// local Manager otherwise. This makes copy commands transparent to whether
+// they operate locally or against a remote ditto server.
+func copyClientFromContext(cmd *cobra.Command) copypkg.CopyClient {
+	if url, ok := cmd.Context().Value(keyServerURL).(string); ok && url != "" {
+		token := os.Getenv("DITTO_TOKEN")
+		return copypkg.NewHTTPClient(url, token)
+	}
+	return managerFromContext(cmd)
+}
 
-	opts := copy.CreateOptions{
-		GHARunID:   os.Getenv("GITHUB_RUN_ID"),
-		GHAJobName: os.Getenv("GITHUB_JOB"),
+// detectRunID returns the first non-empty value from a standard set of
+// automation run-identifier env vars, across common CI systems and local
+// dev tools. DITTO_RUN_ID always takes precedence.
+func detectRunID() string {
+	candidates := []string{
+		"DITTO_RUN_ID",        // explicit override (any environment)
+		"GITHUB_RUN_ID",       // GitHub Actions
+		"CI_PIPELINE_ID",      // GitLab CI
+		"CIRCLE_WORKFLOW_ID",  // CircleCI
+		"TRAVIS_BUILD_ID",     // Travis CI
+		"BUILDKITE_BUILD_ID",  // Buildkite
+		"BUILD_ID",            // Jenkins / generic
+	}
+	for _, k := range candidates {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// detectJobName returns the first non-empty value from a standard set of
+// job/step name env vars. DITTO_JOB_NAME always takes precedence.
+func detectJobName() string {
+	candidates := []string{
+		"DITTO_JOB_NAME",   // explicit override (any environment)
+		"GITHUB_JOB",       // GitHub Actions
+		"CI_JOB_NAME",      // GitLab CI
+		"CIRCLE_JOB",       // CircleCI
+		"TRAVIS_JOB_NAME",  // Travis CI
+		"BUILDKITE_STEP_KEY", // Buildkite
+		"JOB_NAME",         // Jenkins / generic
+	}
+	for _, k := range candidates {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func runCopyCreate(cmd *cobra.Command, ttl, label, format string) error {
+	client := copyClientFromContext(cmd)
+
+	runID := label
+	if runID == "" {
+		runID = detectRunID()
+	}
+	opts := copypkg.CreateOptions{
+		RunID:   runID,
+		JobName: detectJobName(),
 	}
 	if ttl != "" {
 		d, err := time.ParseDuration(ttl)
@@ -28,7 +87,7 @@ func runCopyCreate(cmd *cobra.Command, ttl, label, format string) error {
 		opts.TTLSeconds = int(d.Seconds())
 	}
 
-	c, err := mgr.Create(cmd.Context(), opts)
+	c, err := client.Create(cmd.Context(), opts)
 	if err != nil {
 		return err
 	}
@@ -46,8 +105,8 @@ func runCopyCreate(cmd *cobra.Command, ttl, label, format string) error {
 }
 
 func runCopyList(cmd *cobra.Command) error {
-	cs := copyStoreFromContext(cmd)
-	copies, err := cs.List(store.ListFilter{})
+	client := copyClientFromContext(cmd)
+	copies, err := client.List(cmd.Context())
 	if err != nil {
 		return err
 	}
@@ -58,8 +117,8 @@ func runCopyList(cmd *cobra.Command) error {
 }
 
 func runCopyDelete(cmd *cobra.Command, id string) error {
-	mgr := managerFromContext(cmd)
-	return mgr.Destroy(cmd.Context(), id)
+	client := copyClientFromContext(cmd)
+	return client.Destroy(cmd.Context(), id)
 }
 
 func runCopyLogs(cmd *cobra.Command, id string) error {
@@ -98,6 +157,67 @@ var (
 	styleReady  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	styleFailed = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 )
+
+// runCopyExec creates a copy, runs command with DATABASE_URL set, then destroys
+// the copy regardless of how the command exits. The command's exit code is
+// propagated: callers can inspect it via ExitError.
+func runCopyExec(cmd *cobra.Command, ttl, label string, command []string) error {
+	client := copyClientFromContext(cmd)
+	ctx := cmd.Context()
+
+	runID := label
+	if runID == "" {
+		runID = detectRunID()
+	}
+	opts := copypkg.CreateOptions{
+		RunID:   runID,
+		JobName: detectJobName(),
+	}
+	if ttl != "" {
+		d, err := time.ParseDuration(ttl)
+		if err != nil {
+			return fmt.Errorf("invalid --ttl %q: %w", ttl, err)
+		}
+		opts.TTLSeconds = int(d.Seconds())
+	}
+
+	c, err := client.Create(ctx, opts)
+	if err != nil {
+		return fmt.Errorf("copy run: create: %w", err)
+	}
+
+	// Best-effort destroy on any exit path.
+	defer func() {
+		if err := client.Destroy(ctx, c.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "copy run: cleanup warning: %v\n", err)
+		}
+	}()
+
+	// #nosec G204 -- command is supplied by the operator, not end-user input.
+	proc := exec.CommandContext(ctx, command[0], command[1:]...)
+	proc.Stdin = os.Stdin
+	proc.Stdout = os.Stdout
+	proc.Stderr = os.Stderr
+	proc.Env = append(os.Environ(),
+		"DATABASE_URL="+c.ConnectionString,
+		"DITTO_COPY_ID="+c.ID,
+	)
+
+	// Forward SIGTERM and SIGINT to the child process so it can shut down
+	// gracefully before the defer cleanup runs.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		if sig, ok := <-sigs; ok && proc.Process != nil {
+			_ = proc.Process.Signal(sig)
+		}
+	}()
+
+	runErr := proc.Run()
+	signal.Stop(sigs)
+	close(sigs)
+	return runErr
+}
 
 func printCopyTable(copies []*store.Copy) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/attaradev/ditto/engine"
 	"github.com/attaradev/ditto/internal/config"
+	"github.com/attaradev/ditto/internal/obfuscation"
 	"github.com/attaradev/ditto/internal/store"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -27,12 +28,13 @@ const (
 
 // Manager orchestrates the full lifecycle of ephemeral database copies.
 type Manager struct {
-	cfg    *config.Config
-	eng    engine.Engine
-	copies *store.CopyStore
-	events *store.EventStore
-	ports  *PortPool
-	docker *client.Client
+	cfg      *config.Config
+	eng      engine.Engine
+	copies   *store.CopyStore
+	events   *store.EventStore
+	ports    *PortPool
+	docker   *client.Client
+	refiller *WarmPoolRefiller
 }
 
 // NewManager creates a Manager. The Docker client is created with API version
@@ -51,118 +53,67 @@ func NewManager(
 	if err != nil {
 		return nil, fmt.Errorf("copy: create docker client: %w", err)
 	}
-	return &Manager{
+	m := &Manager{
 		cfg:    cfg,
 		eng:    eng,
 		copies: copies,
 		events: events,
 		ports:  ports,
 		docker: docker,
-	}, nil
+	}
+	m.refiller = NewWarmPoolRefiller(m, cfg.WarmPoolSize)
+	return m, nil
+}
+
+// StartPool starts the warm copy pool refiller as a background goroutine.
+// It is a no-op when warm_pool_size is 0.
+func (m *Manager) StartPool(ctx context.Context) {
+	if m.cfg.WarmPoolSize == 0 {
+		return
+	}
+	go m.refiller.Run(ctx)
 }
 
 // CreateOptions configures a copy creation request.
 type CreateOptions struct {
 	TTLSeconds int
-	GHARunID   string
-	GHAJobName string
+	RunID      string // optional: identifies the run/session that created this copy
+	JobName    string // optional: identifies the job/task within the run
 }
 
-// Create provisions a new ephemeral database copy. It:
-//  1. Checks the dump file exists and warns if stale
-//  2. Allocates a free port
-//  3. Starts a fresh Docker container
-//  4. Waits for the engine to be ready
-//  5. Restores the dump into the container
-//  6. Records the copy in SQLite and returns it
+// Create provisions a new ephemeral database copy. When a pre-warmed copy is
+// available in the pool it is claimed instantly. Otherwise the full slow path
+// (container start + dump restore) is taken.
 func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*store.Copy, error) {
-	dumpPath := m.cfg.Dump.Path
-	if err := checkDump(dumpPath, m.cfg.Dump.StaleThreshold); err != nil {
-		return nil, err
-	}
-
-	port, err := m.ports.Allocate()
-	if err != nil {
-		return nil, fmt.Errorf("copy.Create: %w", err)
-	}
-
-	id := ulid.Make().String()
 	ttl := opts.TTLSeconds
 	if ttl == 0 {
 		ttl = m.cfg.CopyTTLSeconds
 	}
 
-	c := &store.Copy{
-		ID:         id,
-		Status:     store.StatusPending,
-		Port:       port,
-		GHARunID:   opts.GHARunID,
-		GHAJobName: opts.GHAJobName,
-		TTLSeconds: ttl,
-	}
-
-	// Cleanup on any error after port allocation.
-	var containerStarted bool
-	cleanup := func(cause error) {
-		if containerStarted {
-			_ = m.docker.ContainerStop(context.Background(), containerName(id), container.StopOptions{Timeout: intPtr(10)})
-			_ = m.docker.ContainerRemove(context.Background(), containerName(id), container.RemoveOptions{Force: true})
+	// Fast path: claim a pre-warmed copy from the pool (sub-millisecond).
+	if m.cfg.WarmPoolSize > 0 {
+		if c, err := m.copies.ClaimWarm(ttl); err == nil {
+			_ = m.copies.UpdateStatus(c.ID, store.StatusReady,
+				store.WithRunID(opts.RunID),
+				store.WithJobName(opts.JobName),
+			)
+			_ = m.events.Append("copy", c.ID, "claimed", actor,
+				map[string]any{"warm": true, "ttl": ttl})
+			m.refiller.Signal()
+			c.RunID = opts.RunID
+			c.JobName = opts.JobName
+			return c, nil
 		}
-		m.ports.Release(port)
-		if c.ID != "" {
-			_ = m.copies.UpdateStatus(id, store.StatusFailed, store.WithErrorMessage(cause.Error()))
-			_ = m.events.Append("copy", id, "failed", actor, map[string]any{"error": cause.Error()})
-		}
+		slog.Warn("pool: warm pool empty, provisioning fresh copy")
 	}
 
-	if err := m.copies.Create(c); err != nil {
-		m.ports.Release(port)
-		return nil, fmt.Errorf("copy.Create record: %w", err)
-	}
-	_ = m.events.Append("copy", id, "created", actor, map[string]any{"port": port})
+	// Slow path: full dump-and-restore provisioning.
+	return m.provision(ctx, opts, ttl, false)
+}
 
-	// Start the container.
-	containerID, err := m.startContainer(ctx, id, port, dumpPath)
-	if err != nil {
-		cleanup(err)
-		return nil, fmt.Errorf("copy.Create start container: %w", err)
-	}
-	containerStarted = true
-
-	if err := m.copies.UpdateStatus(id, store.StatusCreating, store.WithContainerID(containerID)); err != nil {
-		cleanup(err)
-		return nil, err
-	}
-	_ = m.events.Append("copy", id, "started", actor, map[string]any{"container_id": containerID})
-
-	// Wait for the engine.
-	if err := m.eng.WaitReady(port, 2*time.Minute); err != nil {
-		cleanup(err)
-		return nil, fmt.Errorf("copy.Create wait ready: %w", err)
-	}
-
-	// Restore the dump.
-	if err := m.eng.Restore(ctx, dumpPath, port); err != nil {
-		cleanup(err)
-		return nil, fmt.Errorf("copy.Create restore: %w", err)
-	}
-
-	now := time.Now()
-	connStr := m.eng.ConnectionString("localhost", port)
-	if err := m.copies.UpdateStatus(id, store.StatusReady,
-		store.WithConnectionString(connStr),
-		store.WithReadyAt(now),
-	); err != nil {
-		cleanup(err)
-		return nil, err
-	}
-	_ = m.events.Append("copy", id, "ready", actor, map[string]any{"connection_string": connStr})
-
-	c.Status = store.StatusReady
-	c.ContainerID = containerID
-	c.ConnectionString = connStr
-	c.ReadyAt = &now
-	return c, nil
+// List returns all copies regardless of status, newest first.
+func (m *Manager) List(ctx context.Context) ([]*store.Copy, error) {
+	return m.copies.List(store.ListFilter{})
 }
 
 // Destroy stops and removes a copy's container and marks it destroyed.
@@ -256,6 +207,110 @@ func (m *Manager) RecoverOrphans(ctx context.Context) error {
 	return nil
 }
 
+// provisionWarm creates a warm copy for the pool. It sets Warm=true and uses
+// TTLSeconds=0 (TTL clock starts at claim time, not provision time).
+func (m *Manager) provisionWarm(ctx context.Context) (*store.Copy, error) {
+	return m.provision(ctx, CreateOptions{}, 0, true)
+}
+
+// provision is the shared slow-path provisioning logic used by Create and
+// provisionWarm. warm=true marks the copy for pool pre-warming.
+func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, warm bool) (*store.Copy, error) {
+	dumpPath := m.cfg.Dump.Path
+	if err := checkDump(dumpPath, m.cfg.Dump.StaleThreshold); err != nil {
+		return nil, err
+	}
+
+	port, err := m.ports.Allocate()
+	if err != nil {
+		return nil, fmt.Errorf("copy.Create: %w", err)
+	}
+
+	id := ulid.Make().String()
+	c := &store.Copy{
+		ID:         id,
+		Status:     store.StatusPending,
+		Port:       port,
+		RunID:      opts.RunID,
+		JobName:    opts.JobName,
+		TTLSeconds: ttl,
+		Warm:       warm,
+	}
+
+	// Cleanup on any error after port allocation.
+	var containerStarted bool
+	cleanup := func(cause error) {
+		if containerStarted {
+			_ = m.docker.ContainerStop(context.Background(), containerName(id), container.StopOptions{Timeout: intPtr(10)})
+			_ = m.docker.ContainerRemove(context.Background(), containerName(id), container.RemoveOptions{Force: true})
+		}
+		m.ports.Release(port)
+		if c.ID != "" {
+			_ = m.copies.UpdateStatus(id, store.StatusFailed, store.WithErrorMessage(cause.Error()))
+			_ = m.events.Append("copy", id, "failed", actor, map[string]any{"error": cause.Error()})
+		}
+	}
+
+	if err := m.copies.Create(c); err != nil {
+		m.ports.Release(port)
+		return nil, fmt.Errorf("copy.Create record: %w", err)
+	}
+	_ = m.events.Append("copy", id, "created", actor, map[string]any{"port": port, "warm": warm})
+
+	// Start the container.
+	containerID, err := m.startContainer(ctx, id, port, dumpPath)
+	if err != nil {
+		cleanup(err)
+		return nil, fmt.Errorf("copy.Create start container: %w", err)
+	}
+	containerStarted = true
+
+	if err := m.copies.UpdateStatus(id, store.StatusCreating, store.WithContainerID(containerID)); err != nil {
+		cleanup(err)
+		return nil, err
+	}
+	_ = m.events.Append("copy", id, "started", actor, map[string]any{"container_id": containerID})
+
+	// Wait for the engine.
+	if err := m.eng.WaitReady(port, 2*time.Minute); err != nil {
+		cleanup(err)
+		return nil, fmt.Errorf("copy.Create wait ready: %w", err)
+	}
+
+	// Restore the dump.
+	if err := m.eng.Restore(ctx, dumpPath, containerName(id)); err != nil {
+		cleanup(err)
+		return nil, fmt.Errorf("copy.Create restore: %w", err)
+	}
+
+	// Apply PII obfuscation rules (no-op when rules is empty).
+	if len(m.cfg.Obfuscation.Rules) > 0 {
+		connStr := m.eng.ConnectionString("localhost", port)
+		obf := obfuscation.New(m.eng.Name(), connStr, m.cfg.Obfuscation.Rules)
+		if err := obf.Apply(ctx); err != nil {
+			cleanup(err)
+			return nil, fmt.Errorf("copy.Create obfuscate: %w", err)
+		}
+	}
+
+	now := time.Now()
+	connStr := m.eng.ConnectionString("localhost", port)
+	if err := m.copies.UpdateStatus(id, store.StatusReady,
+		store.WithConnectionString(connStr),
+		store.WithReadyAt(now),
+	); err != nil {
+		cleanup(err)
+		return nil, err
+	}
+	_ = m.events.Append("copy", id, "ready", actor, map[string]any{"connection_string": connStr, "warm": warm})
+
+	c.Status = store.StatusReady
+	c.ContainerID = containerID
+	c.ConnectionString = connStr
+	c.ReadyAt = &now
+	return c, nil
+}
+
 // startContainer creates and starts a Docker container for the copy.
 // It bind-mounts the dump directory read-only at /dump.
 func (m *Manager) startContainer(ctx context.Context, id string, port int, dumpPath string) (string, error) {
@@ -263,9 +318,14 @@ func (m *Manager) startContainer(ctx context.Context, id string, port int, dumpP
 	portStr := fmt.Sprintf("%d", port)
 	exposedPort := nat.Port(portStr + "/tcp")
 
+	image := m.cfg.CopyImage
+	if image == "" {
+		image = m.eng.ContainerImage()
+	}
+
 	resp, err := m.docker.ContainerCreate(ctx,
 		&container.Config{
-			Image: m.eng.ContainerImage(),
+			Image: image,
 			Env:   containerEnv(m.eng.Name()),
 			ExposedPorts: nat.PortSet{
 				exposedPort: struct{}{},
@@ -315,12 +375,12 @@ func containerEnv(engineName string) []string {
 			"POSTGRES_PASSWORD=ditto",
 			"POSTGRES_DB=ditto",
 		}
-	case "mariadb":
+	case "mysql":
 		return []string{
-			"MARIADB_USER=ditto",
-			"MARIADB_PASSWORD=ditto",
-			"MARIADB_DATABASE=ditto",
-			"MARIADB_ROOT_PASSWORD=ditto-root",
+			"MYSQL_USER=ditto",
+			"MYSQL_PASSWORD=ditto",
+			"MYSQL_DATABASE=ditto",
+			"MYSQL_ROOT_PASSWORD=ditto-root",
 		}
 	default:
 		return nil

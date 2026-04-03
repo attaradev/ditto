@@ -17,7 +17,7 @@ func (s *stubEngine) ConnectionString(host string, port int) string {
 	return fmt.Sprintf("stub://%s:%d", host, port)
 }
 func (s *stubEngine) Dump(_ context.Context, _ engine.SourceConfig, _ string) error { return nil }
-func (s *stubEngine) Restore(_ context.Context, _ string, _ int) error              { return nil }
+func (s *stubEngine) Restore(_ context.Context, _ string, _ string) error           { return nil }
 func (s *stubEngine) WaitReady(_ int, _ time.Duration) error                        { return nil }
 
 func TestRegistryRegisterAndGet(t *testing.T) {

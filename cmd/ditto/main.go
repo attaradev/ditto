@@ -9,7 +9,7 @@ import (
 	"github.com/attaradev/ditto/internal/version"
 
 	// Blank imports register engines with the engine registry at startup.
-	_ "github.com/attaradev/ditto/engine/mariadb"
+	_ "github.com/attaradev/ditto/engine/mysql"
 	_ "github.com/attaradev/ditto/engine/postgres"
 )
 

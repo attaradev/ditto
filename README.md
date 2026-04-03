@@ -6,16 +6,13 @@
 
 ## A clean database for every run
 
-ditto provisions throwaway Postgres or MariaDB copies from a scheduled dump.
+ditto provisions throwaway PostgreSQL or MySQL copies from a scheduled dump.
 Each run—whether a test suite, a migration dry-run, a load test, or a local
-debugging session—gets an isolated, production-faithful database. No shared
-state. No leftover mutations. No coordination.
+dev session—gets an isolated, production-faithful database. No shared state.
+No leftover mutations. No coordination.
 
 ```sh
-COPY=$(ditto copy create --format=json)
-export DATABASE_URL=$(echo "$COPY" | jq -r '.ConnectionString')
-COPY_ID=$(echo "$COPY" | jq -r '.ID')
-
+export DATABASE_URL=$(ditto copy create)
 go test ./...
 ditto copy delete "$COPY_ID"
 ```
@@ -27,7 +24,7 @@ ditto copy delete "$COPY_ID"
 | **CI test isolation** | Each job gets a clean throwaway copy; no shared staging contention |
 | **Migration dry-runs** | Validate `migrate up` against real data before merge |
 | **Parallel test sharding** | Each shard worker calls `copy create`; the port pool handles allocation |
-| **Local dev sandbox** | Every developer gets their own copy; no more "who broke staging?" |
+| **Local dev sandbox** | Every developer gets their own isolated copy; no more "who broke staging?" |
 | **Load and perf testing** | Mutations stay in the throwaway copy; staging is never polluted |
 | **Incident reproduction** | Restore a recent dump locally to reproduce and debug production bugs |
 
@@ -52,11 +49,10 @@ to the next run's state.
 
 When ditto is a good fit:
 
-- You run on self-hosted infrastructure with Docker available.
-- Your tests, migrations, or tools need real database behavior—DDL, constraints,
-  triggers—not mocked persistence.
+- You want each test run, migration, or dev session to start from a clean slate.
+- Your tests need real database behavior—DDL, constraints, triggers—not mocked persistence.
 - Shared staging contention or schema drift is already costing you reliability.
-- You want sub-minute database provisioning without standing up extra infra.
+- You want sub-second database provisioning without standing up extra infrastructure.
 
 ## Install
 
@@ -105,40 +101,67 @@ go build -o /usr/local/bin/ditto ./cmd/ditto
 **Prerequisites:**
 
 - Docker on the same host as the CLI
-- `pg_dump` / `pg_restore` for Postgres sources
-- `mysqldump` / `mysql` for MariaDB sources
-- AWS credentials with `secretsmanager:GetSecretValue` if you store passwords
-  in Secrets Manager
+- `pg_dump` / `pg_restore` for PostgreSQL sources
+- `mysqldump` / `mysql` for MySQL sources
 
 Create `ditto.yaml` in the current directory or in `~/.ditto/ditto.yaml`:
 
 ```yaml
 source:
   engine: postgres
-  host: mydb.abc.us-east-1.rds.amazonaws.com
+  host: db.example.com
   port: 5432
   database: myapp
   user: ditto_dump
-  password_secret: arn:aws:secretsmanager:us-east-1:123456789:secret:ditto-rds
+  password: secret           # dev only — use password_secret in production
 
 dump:
   schedule: "0 * * * *"
   path: /data/dump/latest.gz
-  stale_threshold: 7200
 
 copy_ttl_seconds: 7200
 port_pool_start: 5433
 port_pool_end: 5600
 ```
 
-### CI test isolation
+Take a first dump, then create a copy:
 
-Create a clean copy, run your suite, tear it down:
+```sh
+ditto reseed
+export DATABASE_URL=$(ditto copy create)
+```
+
+### One-time / JIT copies
+
+`ditto copy run` handles the full lifecycle automatically — create, inject
+`DATABASE_URL`, run your command, then destroy the copy on exit regardless of
+whether the command succeeds or fails:
+
+```sh
+ditto copy run -- go test ./...
+ditto copy run --ttl 30m -- migrate -database "$DATABASE_URL" up
+ditto copy run --server=http://ditto.internal:8080 -- pytest tests/
+```
+
+Two variables are available inside the command:
+
+| Variable | Value |
+| --- | --- |
+| `DATABASE_URL` | Connection string for the copy |
+| `DITTO_COPY_ID` | Copy ID (for debugging) |
+
+The command's exit code is preserved, so this integrates cleanly into CI
+pipelines. Copies are destroyed even when the command is interrupted with
+Ctrl-C or SIGTERM.
+
+### Manual create / delete
+
+When you need to hold a copy across multiple steps, manage it explicitly:
 
 ```sh
 COPY=$(ditto copy create --format=json)
-export DATABASE_URL=$(echo "$COPY" | jq -r '.ConnectionString')
-COPY_ID=$(echo "$COPY" | jq -r '.ID')
+export DATABASE_URL=$(echo "$COPY" | jq -r '.connection_string')
+COPY_ID=$(echo "$COPY" | jq -r '.id')
 
 go test ./...
 ditto copy delete "$COPY_ID"
@@ -146,52 +169,204 @@ ditto copy delete "$COPY_ID"
 
 ### Migration dry-runs
 
-Validate a migration against real production-shaped data before merge:
-
 ```sh
-COPY=$(ditto copy create --format=json)
-export DATABASE_URL=$(echo "$COPY" | jq -r '.ConnectionString')
-COPY_ID=$(echo "$COPY" | jq -r '.ID')
-
-migrate -database "$DATABASE_URL" up
-# assert schema, row counts, or constraint behavior
-ditto copy delete "$COPY_ID"
+ditto copy run --ttl 15m -- migrate -database "$DATABASE_URL" up
 ```
 
 ### Local developer sandbox
 
-Point `~/.ditto/ditto.yaml` at a shared dump path (NFS mount, S3 sync, or
-a local file from `ditto reseed`). Each developer runs:
+See [Local development](#local-development) for a complete walkthrough.
+
+## Local development
+
+ditto is as useful on a laptop as it is in CI. Every developer gets their
+own isolated, production-faithful database. No shared staging. No seed
+scripts. No "works on my machine" data drift.
+
+### The problem it solves locally
+
+A shared dev or staging database means:
+
+- One developer's experiment breaks another's session
+- Seed data and fixtures diverge from the real schema over time
+- Rolling back a bad migration affects everyone
+
+With ditto, each developer gets their own copy. Changes stay local. Starting
+fresh is a single command.
+
+### One-time setup
+
+**1. Install ditto and ensure Docker is running.**
+
+**2. Create `~/.ditto/ditto.yaml`** pointing at your source database:
+
+```yaml
+source:
+  engine: postgres
+  host: db.example.com
+  port: 5432
+  database: myapp
+  user: ditto_dump
+  password_secret: env:DB_PASSWORD   # never commit passwords
+
+dump:
+  path: ~/.ditto/latest.gz           # stored locally on your machine
+  schedule: "0 * * * *"             # refresh hourly while daemon runs
+
+copy_ttl_seconds: 14400             # copies live 4 h by default
+port_pool_start: 5433
+port_pool_end: 5450                 # small range is fine for local use
+```
+
+If your dump contains real user data, add obfuscation rules so every copy
+is safe to work with locally:
+
+```yaml
+obfuscation:
+  rules:
+    - table: users
+      column: email
+      strategy: hash       # deterministic — queries still work
+    - table: users
+      column: phone
+      strategy: mask
+      keep_last: 4
+    - table: users
+      column: full_name
+      strategy: redact
+```
+
+**3. Take a first dump:**
 
 ```sh
-ditto copy create --format=pipe
+DB_PASSWORD=secret ditto reseed
+```
+
+ditto connects to the source, dumps it to `~/.ditto/latest.gz`, and
+disconnects. From this point forward the source database is not needed for
+day-to-day work.
+
+**4. (Optional) Run the daemon to keep the dump fresh:**
+
+```sh
+ditto daemon &
+```
+
+Or add it to your login items / launchd / systemd so it runs in the
+background and refreshes the dump on the configured schedule.
+
+### Daily workflow
+
+**Get a fresh copy for your session:**
+
+```sh
+export DATABASE_URL=$(ditto copy create)
 # postgres://ditto:ditto@127.0.0.1:5433/ditto
 ```
 
-No coordination needed. Every developer gets their own isolated copy on a
-dedicated port. Tear it down when done:
+Every developer gets their own port. No coordination. No contention.
+
+**Or scope a copy to a single command:**
 
 ```sh
-ditto copy delete "$COPY_ID"
+ditto copy run -- rails server
+ditto copy run -- python manage.py runserver
+ditto copy run -- go run ./cmd/api
+```
+
+The copy is created when the command starts and destroyed when it exits.
+Your application sees `DATABASE_URL` automatically.
+
+**Check what's running:**
+
+```sh
+ditto copy list
+```
+
+**Throw one away and start fresh:**
+
+```sh
+ditto copy delete <id>
+export DATABASE_URL=$(ditto copy create)
+```
+
+### Shell and tooling integration
+
+**direnv** — automatically activate a copy when you enter the project
+directory. Add to `.envrc`:
+
+```sh
+export DATABASE_URL=$(ditto copy create)
+```
+
+**Makefile** — wrap common tasks:
+
+```makefile
+db:
+	export DATABASE_URL=$$(ditto copy create) && echo $$DATABASE_URL
+
+dev:
+	ditto copy run -- go run ./cmd/api
+
+test:
+	ditto copy run -- go test ./...
+
+migrate:
+	ditto copy run -- migrate -database "$$DATABASE_URL" up
+```
+
+**Shell function** — quick alias for a fresh copy:
+
+```sh
+# ~/.zshrc or ~/.bashrc
+ditto-fresh() {
+  export DATABASE_URL=$(ditto copy create)
+  echo "DATABASE_URL=$DATABASE_URL"
+}
+```
+
+### Shared dump for a team
+
+If your team's laptops can't all reach the source database directly, one
+person (or CI) runs `ditto reseed` and distributes the dump:
+
+```sh
+# Sync the dump to a shared location after each reseed
+ditto reseed && aws s3 cp ~/.ditto/latest.gz s3://your-bucket/ditto/latest.gz
+
+# Each developer downloads it
+aws s3 cp s3://your-bucket/ditto/latest.gz ~/.ditto/latest.gz
+```
+
+Or run a single `ditto serve` instance on a shared host that all developers
+hit with `--server`:
+
+```sh
+# On the shared host
+ditto serve
+
+# On each developer's machine (no Docker or dump file needed)
+ditto copy run --server=http://ditto.internal:8080 -- go run ./cmd/api
+export DITTO_TOKEN=my-token  # if the server requires auth
 ```
 
 ## How it works
 
 ```mermaid
 flowchart TD
-    RDS[(RDS Source)]
+    SRC[(Source DB)]
     DUMP["/data/dump/latest.gz"]
     CMD["ditto copy create"]
     CTR["Docker container\nport 5433"]
-    TEST["your tests"]
+    APP["your app / tests"]
     DEL["ditto copy delete &lt;id&gt;"]
     FREE["container destroyed\nport freed"]
 
-    RDS -->|"hourly pg_dump"| DUMP
+    SRC -->|"scheduled dump"| DUMP
     DUMP --> CMD
-    CMD -->|"restore"| CTR
-    CTR -->|"DATABASE_URL=postgres://...:5433/ditto"| TEST
-    TEST --> DEL
+    CMD -->|"restore + obfuscate"| CTR
+    CTR -->|"DATABASE_URL=...5433/ditto"| APP
+    APP --> DEL
     DEL --> FREE
 ```
 
@@ -200,16 +375,20 @@ SQLite database tracks copy state. There is no separate control plane—the
 only long-running process is `ditto daemon`, which handles scheduled dumps
 and TTL-based cleanup.
 
-## GitHub Actions integration
+## CI integration
 
-Use the composite actions for explicit setup and teardown steps in a job:
+ditto works with any CI platform. Use the composite actions for GitHub
+Actions, or pass `--server` to connect to a `ditto serve` instance from
+any runner (GitHub-hosted, GitLab CI, CircleCI, Buildkite, etc.).
+
+### GitHub Actions — self-hosted runner
 
 ```yaml
 jobs:
   test:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - id: db
         uses: attaradev/ditto/actions/create@v1
@@ -226,105 +405,237 @@ jobs:
           copy_id: ${{ steps.db.outputs.copy_id }}
 ```
 
-If your runner is dedicated to ditto-backed jobs, set `DITTO_ENABLED: true`
-to use the pre-job and post-job hooks instead. The pre-job hook creates the
-isolated copy and exports `DATABASE_URL`; the post-job hook deletes it even
-when the job fails.
+### Any CI platform — server mode
+
+Run `ditto serve` on your infrastructure and point any runner at it with
+`--server`. The runner does not need Docker access:
+
+```sh
+# On your ditto host
+ditto serve
+
+# In any CI job (GitHub-hosted, GitLab CI, CircleCI, etc.)
+COPY=$(ditto copy create --server=http://ditto.internal:8080 --format=json)
+export DATABASE_URL=$(echo "$COPY" | jq -r '.connection_string')
+COPY_ID=$(echo "$COPY" | jq -r '.id')
+
+# ... run tests ...
+ditto copy delete "$COPY_ID" --server=http://ditto.internal:8080
+```
+
+Set `DITTO_TOKEN` for authenticated servers:
+
+```sh
+export DITTO_TOKEN=my-secret-token
+ditto copy create --server=http://ditto.internal:8080
+```
+
+GitHub Actions with server mode:
 
 ```yaml
-jobs:
-  test:
-    runs-on: self-hosted
-    env:
-      DITTO_ENABLED: true
-    steps:
-      - uses: actions/checkout@v6
-      - run: go test ./...
-        env:
-          DATABASE_URL: ${{ env.DATABASE_URL }}
+- id: db
+  uses: attaradev/ditto/actions/create@v1
+  with:
+    server_url: http://ditto.internal:8080
+    ditto_token: ${{ secrets.DITTO_TOKEN }}
+    ttl: 1h
+```
+
+### Go SDK
+
+**In tests** — `NewCopy` provisions a copy and registers `t.Cleanup` to destroy it:
+
+```go
+import "github.com/attaradev/ditto/pkg/ditto"
+
+func TestMyFeature(t *testing.T) {
+    dsn := ditto.NewCopy(t,
+        ditto.WithServerURL("http://ditto.internal:8080"),
+        ditto.WithToken(os.Getenv("DITTO_TOKEN")),
+        ditto.WithTTL(10*time.Minute),
+    )
+    db, _ := sql.Open("pgx", dsn)
+    // copy is destroyed automatically when the test finishes
+}
+```
+
+**Outside tests** — `WithCopy` scopes the copy to a function call:
+
+```go
+client := ditto.New(
+    ditto.WithServerURL("http://ditto.internal:8080"),
+    ditto.WithToken(os.Getenv("DITTO_TOKEN")),
+)
+
+err := client.WithCopy(ctx, func(dsn string) error {
+    return runMigrations(dsn)
+})
 ```
 
 ## Configuration
 
-Use individual fields in `ditto.yaml` for explicit control over engine, host,
-and credentials:
+### Minimal config
 
 ```yaml
 source:
-  engine: postgres
-  host: mydb.abc.us-east-1.rds.amazonaws.com
+  engine: postgres          # or mysql
+  host: db.example.com
   port: 5432
   database: myapp
   user: ditto_dump
-  password_secret: arn:aws:secretsmanager:us-east-1:123456789:secret:ditto-rds
+  password: secret          # dev only
 
 dump:
-  schedule: "0 * * * *"
   path: /data/dump/latest.gz
-  stale_threshold: 7200
 
 copy_ttl_seconds: 7200
 port_pool_start: 5433
 port_pool_end: 5600
 ```
 
-For local development, use `password` instead of `password_secret`:
+### Connection URL
+
+Supply the source as a single URL instead of individual fields:
 
 ```yaml
 source:
-  engine: postgres
-  host: localhost
-  port: 5432
-  database: myapp
-  user: myuser
-  password: mypassword
+  url: postgres://ditto_dump:secret@db.example.com:5432/myapp
 ```
 
-Environment variables override config file values. The prefix is `DITTO_` and
+Supported schemes: `postgres`, `postgresql`, `mysql`, `mariadb`.
+
+### Secret references
+
+`password_secret` and `token_secret` accept a backend prefix so credentials
+are never stored in config files:
+
+| Format | Backend |
+| --- | --- |
+| `env:MY_VAR` | Environment variable `MY_VAR` |
+| `file:/run/secrets/pw` | File contents (Docker secrets, Kubernetes mounts) |
+| `arn:aws:secretsmanager:...` | AWS Secrets Manager (cached 5 min) |
+
+```yaml
+source:
+  password_secret: env:DB_PASSWORD          # read from environment
+  # password_secret: file:/run/secrets/pw  # read from mounted secret
+  # password_secret: arn:aws:...           # AWS Secrets Manager
+```
+
+### Warm copy pool
+
+Pre-warm N copies so `ditto copy create` returns in under a second:
+
+```yaml
+warm_pool_size: 3   # keep 3 ready copies; disable with 0 (default)
+```
+
+The daemon refills the pool in the background after each claim.
+
+### PII obfuscation
+
+Scrub sensitive columns after each restore before the copy is handed to the
+caller. Four strategies are supported:
+
+| Strategy | Effect |
+| --- | --- |
+| `replace` | Deterministic format-preserving substitution — looks like real data, isn't |
+| `hash` | One-way SHA-256 hex digest — preserves uniqueness for `JOIN`s |
+| `mask` | Replaces characters with `*` (configurable `mask_char` and `keep_last`) |
+| `redact` | Replaces the value with `[redacted]` (configurable via `with:`) |
+| `nullify` | Sets the column to `NULL` |
+
+**`replace`** is the recommended strategy for most PII. It generates realistic-looking
+values derived deterministically from the original, so foreign key relationships
+and `JOIN`s still work:
+
+| `type` | Example output |
+| --- | --- |
+| `email` | `user483921@example.com` |
+| `name` | `User74831` |
+| `phone` | `+1-555-0147-3821` (NANP fictional range) |
+| `ip` | `10.42.17.3` (RFC 1918 — never public) |
+| `url` | `https://example.com/r/a3f92b1c8d04` |
+| `uuid` | `a3f92b1c-8d04-4e2f-b3a1-9c2d8f7e1b05` |
+
+```yaml
+obfuscation:
+  rules:
+    - table: users
+      column: email
+      strategy: replace
+      type: email          # user483921@example.com
+
+    - table: users
+      column: full_name
+      strategy: replace
+      type: name           # User74831
+
+    - table: users
+      column: phone
+      strategy: replace
+      type: phone          # +1-555-0147-3821
+
+    - table: events
+      column: ip_address
+      strategy: replace
+      type: ip             # 10.42.17.3
+
+    - table: users
+      column: ssn
+      strategy: nullify    # NULL — no substitute value needed
+
+    - table: users
+      column: notes
+      strategy: redact     # [redacted] — freeform text with no useful shape
+
+    - table: payments
+      column: card_number
+      strategy: mask
+      keep_last: 4         # ************1234
+```
+
+### Pinned copy image
+
+Override the Docker image used for copy containers to pin a specific version:
+
+```yaml
+copy_image: "postgres:15-alpine"   # default: postgres:16-alpine
+# copy_image: "mysql:5.7"         # default: mysql:8.4
+```
+
+### HTTP server
+
+```yaml
+server:
+  addr: ":8080"
+  token: ""                        # plaintext token (dev only)
+  token_secret: env:DITTO_TOKEN    # or file:/run/secrets/token, or arn:aws:...
+```
+
+### Environment variable overrides
+
+Any config field can be overridden at runtime. The prefix is `DITTO_` and
 dots become underscores:
 
 ```bash
-DITTO_SOURCE_HOST=other.rds.amazonaws.com ditto copy create
+DITTO_SOURCE_HOST=db.staging.example.com ditto copy create
 ```
 
-To supply the source as a single connection string, ditto also accepts
-`source.url` for Postgres, PostgreSQL, MySQL, and MariaDB DSNs.
+### Full reference
+
+See [`ditto.yaml.example`](ditto.yaml.example) for a complete annotated
+configuration file.
 
 ## Operational model
 
-ditto is designed for teams already running self-hosted infrastructure. A
-typical setup has one host running the GitHub Actions runner, Docker, the
-local dump file, and the SQLite metadata database. `ditto daemon` keeps the
-dump fresh and removes expired copies automatically.
-
-### Runner setup
-
-Install the hooks on the host:
-
-```bash
-cp hooks/pre-job.sh  /home/runner/hooks/pre-job.sh
-cp hooks/post-job.sh /home/runner/hooks/post-job.sh
-chmod +x /home/runner/hooks/*.sh
-```
-
-Add to the runner's systemd service unit (`/etc/systemd/system/actions-runner.service`):
-
-```ini
-[Service]
-Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/home/runner/hooks/pre-job.sh
-Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/hooks/post-job.sh
-```
-
-The runner user must be in the `docker` group:
-
-```bash
-usermod -aG docker runner
-```
+A typical setup runs one host with Docker, the local dump file, the SQLite
+metadata database, and `ditto daemon`. The daemon keeps the dump fresh and
+removes expired copies automatically.
 
 ### Keep dumps fresh
 
-Run `ditto daemon` as a systemd service for scheduled dumps and automatic
-cleanup of expired copies:
+Run `ditto daemon` as a systemd service:
 
 ```ini
 [Unit]
@@ -341,25 +652,49 @@ WorkingDirectory=/home/runner
 WantedBy=multi-user.target
 ```
 
-Or run a standalone cron job for just the dump:
+Or a standalone cron job for just the dump:
 
 ```cron
 0 * * * * /usr/local/bin/ditto reseed >> /var/log/ditto-reseed.log 2>&1
 ```
 
+### Runner setup (GitHub Actions self-hosted)
+
+Install the hooks on the runner host:
+
+```bash
+cp hooks/pre-job.sh  /home/runner/hooks/pre-job.sh
+cp hooks/post-job.sh /home/runner/hooks/post-job.sh
+chmod +x /home/runner/hooks/*.sh
+```
+
+Add to the runner's systemd service unit:
+
+```ini
+[Service]
+Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/home/runner/hooks/pre-job.sh
+Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/hooks/post-job.sh
+```
+
+The runner user must be in the `docker` group:
+
+```bash
+usermod -aG docker runner
+```
+
 ## Security and data handling
 
-- Source database passwords can be pulled from AWS Secrets Manager; ditto
-  never persists them in SQLite.
+- Credentials are never persisted in SQLite. Resolve them at runtime via
+  `env:`, `file:`, or `arn:aws:` secret references.
 - Copy containers bind to `127.0.0.1`, keeping them local to the host.
-- Copies may contain real production data—disk encryption and host access
-  control still matter.
-- Access to the Docker socket is effectively root-level access on the host;
-  restrict it accordingly.
+- Copies may contain production data. Apply obfuscation rules to scrub PII
+  before copies are handed to callers.
+- Access to the Docker socket is effectively root-level on the host; restrict
+  it accordingly.
 
 See [SECURITY.md](SECURITY.md) for the full security model and disclosure policy.
 
-## Advanced and extension material
+## Advanced
 
 ### Database user setup
 
@@ -375,7 +710,7 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO ditto_dump;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO ditto_dump;
 ```
 
-**MariaDB:**
+**MySQL / MariaDB:**
 
 ```sql
 CREATE USER 'ditto_dump'@'%' IDENTIFIED BY 'secret';
@@ -391,30 +726,27 @@ FLUSH PRIVILEGES;
 4. Add a blank import to `cmd/ditto/main.go`
 
 ```go
-// engine/mysql/mysql.go
-package mysql
+// engine/sqlite/sqlite.go
+package sqlite
 
-import (
-    "github.com/attaradev/ditto/engine"
-)
+import "github.com/attaradev/ditto/engine"
 
 func init() { engine.Register(&Engine{}) }
 
 type Engine struct{}
 
-func (e *Engine) Name() string { return "mysql" }
-// ... implement remaining 5 methods
+func (e *Engine) Name() string { return "sqlite" }
+// ... implement the remaining 5 methods
 ```
 
-No changes to core dispatch are required beyond registering the engine and
-importing it in the CLI entrypoint.
+No changes to core dispatch are required—registering the engine and importing
+it in the CLI entrypoint is sufficient.
 
 ### Development
 
 ```bash
 go test ./...
 go test -race ./...
-go test -tags integration ./internal/copy/...
 go build ./cmd/ditto
 ```
 
@@ -422,11 +754,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and conventions.
 
 ### Repository landmarks
 
-- `cmd/` — CLI commands and the main entrypoint
-- `engine/` — the engine interface and database-specific implementations
-- `internal/copy/` — isolated copy lifecycle and port allocation
-- `internal/dump/` — scheduled source dumps with atomic file replacement
-- `internal/store/` — SQLite metadata for copies and lifecycle events
+| Path | Purpose |
+| --- | --- |
+| `cmd/` | CLI commands and the main entrypoint |
+| `engine/` | Engine interface and database-specific implementations (postgres, mysql) |
+| `internal/copy/` | Copy lifecycle, port pool, warm pool, HTTP client |
+| `internal/dump/` | Scheduled source dumps with atomic file replacement |
+| `internal/obfuscation/` | Post-restore PII scrubbing |
+| `internal/secret/` | Secret resolution (env, file, AWS Secrets Manager) |
+| `internal/server/` | HTTP API server for remote copy operations |
+| `internal/store/` | SQLite metadata for copies and lifecycle events |
+| `pkg/ditto/` | Go SDK — `NewCopy(t)` for use in test suites |
+| `actions/` | GitHub Actions composite actions |
 
 ## License
 

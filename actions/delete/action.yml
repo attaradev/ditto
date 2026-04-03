@@ -5,9 +5,24 @@ inputs:
   copy_id:
     description: 'Copy ID returned by attaradev/ditto/actions/create'
     required: true
+  server_url:
+    description: 'Remote ditto server URL (e.g. http://ditto.internal:8080). If omitted, ditto runs locally.'
+    required: false
+    default: ''
+  ditto_token:
+    description: 'Bearer token for authenticating with a remote ditto server.'
+    required: false
+    default: ''
 
 runs:
   using: composite
   steps:
     - shell: bash
-      run: ditto copy delete "${{ inputs.copy_id }}" || true
+      env:
+        DITTO_TOKEN: ${{ inputs.ditto_token }}
+      run: |
+        SERVER_FLAG=""
+        if [ -n "${{ inputs.server_url }}" ]; then
+          SERVER_FLAG="--server=${{ inputs.server_url }}"
+        fi
+        ditto copy delete "${{ inputs.copy_id }}" $SERVER_FLAG || true

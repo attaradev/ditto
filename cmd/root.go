@@ -25,6 +25,7 @@ const (
 	keyManager
 	keyScheduler
 	keyConfig
+	keyServerURL
 )
 
 // NewRootCmd constructs the root cobra command. dbPath and cfgPath are
@@ -98,6 +99,7 @@ Use it when shared staging databases make test runs flaky, schema fidelity matte
 		newReseedCmd(),
 		newStatusCmd(),
 		newDaemonCmd(),
+		newServeCmd(),
 	)
 	return root
 }

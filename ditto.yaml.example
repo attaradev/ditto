@@ -9,15 +9,15 @@ source:
   # are all inferred from the URL). Supported schemes: postgres, postgresql,
   # mysql, mariadb. Individual fields below override URL values if both are set.
   #
-  # url: postgres://ditto_dump:secret@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp
+  # url: postgres://ditto_dump:secret@db.example.com:5432/myapp
 
   # Option B — individual fields.
 
-  # Database engine. Supported: "postgres", "mariadb"
+  # Database engine. Supported: "postgres", "mysql"
   engine: postgres
 
-  # RDS endpoint
-  host: mydb.abc123.us-east-1.rds.amazonaws.com
+  # Database host
+  host: db.example.com
   port: 5432
   database: myapp
 
@@ -25,10 +25,14 @@ source:
   user: ditto_dump
 
   # One of password or password_secret must be set.
-  # Use password_secret in production (AWS Secrets Manager ARN).
   # Use password for local development only — never commit real passwords.
+  # password_secret accepts any of these formats:
+  #   env:MY_SECRET_VAR                         — environment variable
+  #   file:/run/secrets/db_password             — Docker secret or mounted file
+  #   arn:aws:secretsmanager:us-east-1:...:...  — AWS Secrets Manager
   #
   # password: localdevpassword
+  # password_secret: env:DB_PASSWORD
   password_secret: arn:aws:secretsmanager:us-east-1:123456789012:secret:ditto-rds-password
 
 dump:
@@ -51,3 +55,61 @@ copy_ttl_seconds: 7200
 # Ensure this range doesn't conflict with other services on the host.
 port_pool_start: 5433
 port_pool_end: 5600
+
+# Docker image used for copy containers.
+# Defaults to the engine's built-in image (postgres:16-alpine or mysql:8.4).
+# Override to pin a specific version:
+#   copy_image: "postgres:15-alpine"
+#   copy_image: "mysql:5.7"
+# copy_image: ""
+
+# Pre-warm N copies so ditto copy create returns in <1s.
+# 0 (default) disables the pool. A value of 2–3 covers most CI parallelism.
+# warm_pool_size: 3
+
+# PII obfuscation rules applied after every dump restore.
+# Scrub sensitive columns before the copy is handed to the caller.
+#
+# Strategies:
+#   replace  — deterministic format-preserving substitution (recommended for most PII)
+#              type: email | name | phone | ip | url | uuid
+#   hash     — one-way SHA-256 hex; preserves uniqueness for JOINs
+#   mask     — replace characters with a mask char (default '*'); keep_last preserves suffix
+#   redact   — replace with '[redacted]' (or a custom string via with:)
+#   nullify  — set to NULL
+#
+# obfuscation:
+#   rules:
+#     - table: users
+#       column: email
+#       strategy: replace
+#       type: email           # user483921@example.com
+#     - table: users
+#       column: full_name
+#       strategy: replace
+#       type: name            # User74831
+#     - table: users
+#       column: phone
+#       strategy: replace
+#       type: phone           # +1-555-0147-3821 (NANP fictional range)
+#     - table: events
+#       column: ip_address
+#       strategy: replace
+#       type: ip              # 10.42.17.3 (RFC1918, never public)
+#     - table: users
+#       column: ssn
+#       strategy: nullify     # set to NULL
+#     - table: users
+#       column: notes
+#       strategy: redact      # [redacted]
+#     - table: payments
+#       column: card_number
+#       strategy: mask
+#       keep_last: 4          # ************1234
+#       mask_char: "*"
+
+# HTTP API server settings (used by ditto serve).
+# server:
+#   addr: ":8080"
+#   token: ""              # plaintext Bearer token (dev only — never commit real tokens)
+#   token_secret: ""       # secret reference: env:VAR, file:/path, or arn:aws:...

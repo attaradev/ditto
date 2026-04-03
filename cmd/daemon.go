@@ -39,6 +39,9 @@ func runDaemon(cmd *cobra.Command) error {
 		slog.Error("daemon: orphan recovery failed", "err", err)
 	}
 
+	// Start the warm copy pool refiller (no-op when warm_pool_size=0).
+	mgr.StartPool(ctx)
+
 	// Start the cron-based dump scheduler.
 	if err := sched.Start(); err != nil {
 		return err

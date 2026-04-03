@@ -1,16 +1,36 @@
 package cmd
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
 )
 
 func newCopyCmd() *cobra.Command {
+	var serverURL string
+
 	cmd := &cobra.Command{
 		Use:   "copy",
 		Short: "Provision and manage isolated database copies",
 	}
+
+	cmd.PersistentFlags().StringVar(&serverURL, "server", "",
+		"Remote ditto server URL for copy operations (e.g. http://ditto.internal:8080). "+
+			"Auth token from DITTO_TOKEN env var.")
+
+	// Store the server URL in context so sub-commands can access it via
+	// copyClientFromContext without reading the flag directly.
+	cmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if serverURL != "" {
+			ctx := context.WithValue(cmd.Context(), keyServerURL, serverURL)
+			cmd.SetContext(ctx)
+		}
+		return nil
+	}
+
 	cmd.AddCommand(
 		newCopyCreateCmd(),
+		newCopyRunCmd(),
 		newCopyListCmd(),
 		newCopyDeleteCmd(),
 		newCopyLogsCmd(),
@@ -39,8 +59,41 @@ Use --format=json when automation needs both the copy ID and the connection stri
 		},
 	}
 	cmd.Flags().StringVar(&ttl, "ttl", "", "Override copy lifetime (for example: 1h, 30m)")
-	cmd.Flags().StringVar(&label, "label", "", "Optional automation label (for example: gha_run_id=12345)")
+	cmd.Flags().StringVar(&label, "label", "", "Run identifier to tag this copy (overrides auto-detected DITTO_RUN_ID / CI env vars)")
 	cmd.Flags().StringVar(&format, "format", "auto", "Output format: auto, pipe, json")
+	return cmd
+}
+
+func newCopyRunCmd() *cobra.Command {
+	var (
+		ttl   string
+		label string
+	)
+	cmd := &cobra.Command{
+		Use:   "run [flags] -- <command> [args...]",
+		Short: "Run a command with a one-time database copy",
+		Long: `Create an isolated database copy, run a command with DATABASE_URL set,
+then destroy the copy when the command exits — regardless of exit code.
+
+The copy lifecycle is fully automatic:
+
+  ditto copy run -- go test ./...
+  ditto copy run --ttl 30m -- migrate -database "$DATABASE_URL" up
+  ditto copy run --server=http://ditto.internal:8080 -- pytest tests/
+
+Two environment variables are available to the command:
+  DATABASE_URL    — connection string for the copy
+  DITTO_COPY_ID   — copy ID (for debugging)
+
+The command's exit code is preserved.`,
+		Args:               cobra.MinimumNArgs(1),
+		DisableFlagParsing: false,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runCopyExec(cmd, ttl, label, args)
+		},
+	}
+	cmd.Flags().StringVar(&ttl, "ttl", "", "Copy lifetime (e.g. 1h, 30m); defaults to copy_ttl_seconds in config")
+	cmd.Flags().StringVar(&label, "label", "", "Run identifier tag (overrides auto-detected DITTO_RUN_ID)")
 	return cmd
 }
 

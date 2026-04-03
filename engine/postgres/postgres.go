@@ -77,23 +77,10 @@ func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath str
 }
 
 // Restore calls pg_restore inside the running container by exec-ing into it.
-// The dump directory is expected to be bind-mounted at /dump inside the
-// container. This avoids network overhead and eliminates the need for
-// pg_restore on the host.
-//
-// The actual Docker exec is performed by the copy manager, which calls this
-// method after the container is started. The implementation here shells out
-// directly to the Docker CLI for simplicity; Phase 2 will migrate to the
-// Docker SDK exec API.
-func (e *Engine) Restore(ctx context.Context, dumpPath string, port int) error {
-	// Wait for the container to accept connections before restoring.
-	if err := e.WaitReady(port, 2*time.Minute); err != nil {
-		return fmt.Errorf("postgres: container not ready before restore: %w", err)
-	}
-
-	// pg_restore reads from /dump/latest.gz inside the container.
-	// The container name is ditto-<port> by convention set by the manager.
-	containerName := fmt.Sprintf("ditto-%d", port)
+// containerName is the Docker container name (e.g. "ditto-<id>") as set by the
+// copy manager. The manager calls WaitReady before Restore, so readiness is
+// already guaranteed when this method is invoked.
+func (e *Engine) Restore(ctx context.Context, dumpPath string, containerName string) error {
 	// #nosec G204 -- docker is invoked without a shell and the container name is internally generated.
 	cmd := exec.CommandContext(ctx,
 		"docker", "exec", containerName,

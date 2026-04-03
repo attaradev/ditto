@@ -81,6 +81,13 @@ var migrations = []string{
 	// v2: covering index for the TTL expiry query (status + created_at + ttl_seconds)
 	// so ListExpired() does not require a full-table scan.
 	`CREATE INDEX IF NOT EXISTS idx_copies_ttl ON copies(status, created_at, ttl_seconds)`,
+
+	// v3: warm copy pool column. Default 0 (false) for all existing rows.
+	`ALTER TABLE copies ADD COLUMN warm INTEGER NOT NULL DEFAULT 0`,
+
+	// v4: rename automation-tracking columns to generic names.
+	`ALTER TABLE copies RENAME COLUMN gha_run_id TO run_id`,
+	`ALTER TABLE copies RENAME COLUMN gha_job_name TO job_name`,
 }
 
 // migrate applies any migrations that have not yet been recorded in
