@@ -46,7 +46,7 @@ func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath str
 		return fmt.Errorf("mariadb: resolve password: %w", err)
 	}
 
-	f, err := os.Create(destPath)
+	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("mariadb: create dump file: %w", err)
 	}
@@ -63,9 +63,9 @@ func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath str
 		"-h", src.Host,
 		"-P", fmt.Sprint(src.Port),
 		"-u", src.User,
-		"-p"+password,
 		src.Database,
 	)
+	cmd.Env = append(os.Environ(), "MYSQL_PWD="+password)
 	cmd.Stdout = gz
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

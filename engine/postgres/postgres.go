@@ -4,11 +4,13 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -39,15 +41,21 @@ func (e *Engine) ConnectionString(host string, port int) string {
 
 // Dump runs pg_dump against src and writes a custom-format compressed dump
 // to destPath. Uses exec.CommandContext so context cancellation kills the
-// subprocess.
+// subprocess. The password is passed via PGPASSWORD to avoid it appearing
+// in process listings.
 func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath string) error {
 	password, err := e.resolvePassword(ctx, src)
 	if err != nil {
 		return fmt.Errorf("postgres: resolve password: %w", err)
 	}
 
-	dsn := fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s sslmode=require",
-		src.Host, src.Port, src.Database, src.User, password)
+	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("postgres: create dump file: %w", err)
+	}
+
+	dsn := fmt.Sprintf("host=%s port=%d dbname=%s user=%s sslmode=require",
+		src.Host, src.Port, src.Database, src.User)
 
 	// #nosec G204 -- pg_dump is invoked without a shell and config values are passed as argv.
 	cmd := exec.CommandContext(ctx,
@@ -56,11 +64,18 @@ func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath str
 		"--compress=9",
 		"--no-owner",
 		"--no-acl",
-		"--file="+destPath,
 		dsn,
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("postgres: pg_dump failed: %w\n%s", err, out)
+	cmd.Stdout = f
+	cmd.Env = append(os.Environ(), "PGPASSWORD="+password)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("postgres: pg_dump failed: %w\n%s", err, stderr.Bytes())
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("postgres: close dump file: %w", err)
 	}
 	return nil
 }

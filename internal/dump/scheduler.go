@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
 	"github.com/attaradev/ditto/engine"
 	"github.com/attaradev/ditto/internal/config"
@@ -17,10 +18,11 @@ import (
 // Scheduler runs engine.Dump on a cron schedule and atomically replaces the
 // local dump file on success.
 type Scheduler struct {
-	cfg    *config.Config
-	eng    engine.Engine
-	events *store.EventStore
-	cron   *cron.Cron
+	cfg     *config.Config
+	eng     engine.Engine
+	events  *store.EventStore
+	cron    *cron.Cron
+	running atomic.Bool
 }
 
 // New creates a Scheduler. Call Start() to begin the cron loop.
@@ -36,6 +38,11 @@ func New(cfg *config.Config, eng engine.Engine, events *store.EventStore) *Sched
 // Start registers the dump job with the cron scheduler and starts it.
 func (s *Scheduler) Start() error {
 	_, err := s.cron.AddFunc(s.cfg.Dump.Schedule, func() {
+		if !s.running.CompareAndSwap(false, true) {
+			slog.Warn("dump: skipping scheduled run, previous run still in progress")
+			return
+		}
+		defer s.running.Store(false)
 		ctx := context.Background()
 		if err := s.RunOnce(ctx); err != nil {
 			slog.Error("dump: scheduled run failed", "err", err)
