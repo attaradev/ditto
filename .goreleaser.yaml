@@ -47,7 +47,7 @@ brews:
       name: ditto-bot
       email: mpyebattara@gmail.com
     homepage: https://github.com/attaradev/ditto
-    description: "Ephemeral Postgres and MySQL database copies for tests, migrations, and local dev — schema-aware, no shared state, instant isolation."
+    description: "Real production data, PII scrubbed, isolated for every run — ephemeral Postgres and MySQL copies, no shared state."
     license: MIT
     skip_upload: auto
     install: |
@@ -62,7 +62,7 @@ nfpms:
     vendor: Attara
     homepage: https://github.com/attaradev/ditto
     maintainer: Mike Attara <mpyebattara@gmail.com>
-    description: "Ephemeral Postgres and MySQL database copies for tests, migrations, and local dev — schema-aware, no shared state, instant isolation."
+    description: "Real production data, PII scrubbed, isolated for every run — ephemeral Postgres and MySQL copies, no shared state."
     license: MIT
     formats:
       - deb

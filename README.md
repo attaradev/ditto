@@ -4,16 +4,20 @@
 
 [![CI](https://github.com/attaradev/ditto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/attaradev/ditto/actions/workflows/ci.yml)
 
-## Ephemeral Postgres and MySQL database copies for tests, migrations, and local dev
+## Real production data. Zero risk. For every run.
 
-ditto provisions schema-aware PostgreSQL or MySQL copies from a scheduled dump.
-Each run—whether a test suite, a migration dry-run, or a local dev session—gets
-an isolated, production-faithful database. No shared state. No leftover mutations.
-No control plane.
+ditto provisions isolated Postgres and MySQL copies from a scheduled production
+dump — with PII obfuscated once at source, so every copy carries real schema and
+real data shapes without exposing sensitive information. No shared state. No seed
+scripts. No fabricated fixtures.
 
 ```sh
 ditto copy run -- go test ./...
 ```
+
+> **Real data, safely.** Configure obfuscation rules once and ditto bakes PII
+> scrubbing into the dump file — every copy restored from it is already clean.
+> Developers get production-faithful data shapes without ever seeing raw PII.
 
 ## Use cases
 
@@ -23,6 +27,7 @@ ditto copy run -- go test ./...
 | **Migration dry-runs** | Validate `migrate up` against real data before merge |
 | **Parallel test sharding** | Each shard worker calls `copy create`; the port pool handles allocation |
 | **Local dev sandbox** | Every developer gets their own isolated copy; no more "who broke staging?" |
+| **Compliance-safe dev** | Obfuscation rules bake PII scrubbing into the dump once — every copy is safe |
 | **Load and perf testing** | Mutations stay in the throwaway copy; staging is never polluted |
 | **Incident reproduction** | Restore a recent dump locally to reproduce and debug production bugs |
 
@@ -41,9 +46,13 @@ shapes over time. Tests pass on fabricated data and fail on real data.
 multiple connections, or out-of-process workers—the exact conditions that
 production runs under.
 
-ditto eliminates all three. Each run gets a copy restored from a scheduled
-source dump, with production-like schema and data shapes, and no connection
-to the next run's state.
+**Fabricated data.** Synthetic seeds don't reproduce production bugs. Edge
+cases, constraint violations, and performance characteristics only appear on
+real data — but real data can't go to developers because of PII.
+
+ditto eliminates all four. Each run gets a copy restored from a production
+dump with PII obfuscated at source, so the data is real but safe — and no
+run shares state with the next.
 
 When ditto is a good fit:
 
