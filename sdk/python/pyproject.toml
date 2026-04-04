@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "ditto-sdk"
@@ -8,8 +8,13 @@ version = "0.1.0"
 description = "Python client for the ditto ephemeral database copy service"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/attaradev/ditto/tree/main/sdk/python"
+Repository = "https://github.com/attaradev/ditto"
+Issues = "https://github.com/attaradev/ditto/issues"
 
 [project.optional-dependencies]
 pytest = ["pytest>=7"]

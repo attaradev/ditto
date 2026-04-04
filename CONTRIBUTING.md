@@ -117,6 +117,7 @@ aligned before you invest implementation time.
 | `internal/server/` | HTTP API server for remote copy operations |
 | `internal/store/` | SQLite metadata for copy state and lifecycle events |
 | `pkg/ditto/` | Go SDK for tests and programmatic copy lifecycle |
+| `sdk/javascript/` | TypeScript SDK for Node.js clients |
 | `sdk/python/` | Python SDK and pytest fixture |
 | `actions/` | Composite GitHub Actions bundled in the repository |
 | `docs/` | Diataxis documentation set |

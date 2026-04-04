@@ -33,6 +33,11 @@ __pycache__/
 dist/
 .venv/
 
+# TypeScript / JavaScript
+node_modules/
+*.tsbuildinfo
+sdk/javascript/.tmp/
+
 # OS
 .DS_Store
 Thumbs.db

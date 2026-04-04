@@ -171,3 +171,31 @@ with client.with_copy() as dsn:
 
 The Python SDK reads `DITTO_SERVER_URL`, `DITTO_TOKEN`, and `DITTO_TTL` from the environment when
 they are present.
+
+## Use the JavaScript / TypeScript SDK
+
+Install from the package directory during local development, or from npm once you have published the
+package for your environment:
+
+```bash
+npm install ./sdk/javascript
+```
+
+Example:
+
+```ts
+import { DittoClient } from "@attaradev/ditto-sdk";
+
+const client = new DittoClient({
+  serverUrl: "http://ditto.internal:8080",
+  token: process.env.DITTO_TOKEN,
+  ttlSeconds: 600,
+});
+
+await client.withCopy(async (dsn) => {
+  await runMigrations(dsn);
+});
+```
+
+The JavaScript SDK reads `DITTO_SERVER_URL`, `DITTO_TOKEN`, and `DITTO_TTL` from the environment
+when they are present.
