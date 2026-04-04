@@ -81,6 +81,14 @@ go build -o ./ditto ./cmd/ditto
 The release workflow is configured to publish packaged binaries and OS packages. See
 [Releases](https://github.com/attaradev/ditto/releases).
 
+### SDKs
+
+| Language | Install |
+| --- | --- |
+| Python 3.11+ | `pip install ditto-sdk` |
+| Node.js 18+ | `npm install @attaradev/ditto-sdk` |
+| Go | `import "github.com/attaradev/ditto/pkg/ditto"` |
+
 ## Quickstart
 
 Prerequisites:

@@ -144,10 +144,10 @@ err := client.WithCopy(ctx, func(dsn string) error {
 
 The Python SDK requires Python 3.11+.
 
-Install it from the repository checkout:
+Install from PyPI:
 
 ```bash
-pip install "./sdk/python[pytest]"
+pip install "ditto-sdk[pytest]"
 ```
 
 Pytest fixture:
@@ -174,11 +174,10 @@ they are present.
 
 ## Use the JavaScript / TypeScript SDK
 
-Install from the package directory during local development, or from npm once you have published the
-package for your environment:
+Install from npm:
 
 ```bash
-npm install ./sdk/javascript
+npm install @attaradev/ditto-sdk
 ```
 
 Example:

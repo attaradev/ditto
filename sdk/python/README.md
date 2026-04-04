@@ -8,6 +8,12 @@ Python client for provisioning ephemeral database copies from a running ditto se
 pip install "ditto-sdk[pytest]"
 ```
 
+For development from a repository checkout:
+
+```bash
+pip install -e "./sdk/python[pytest]"
+```
+
 ## Usage
 
 ```python

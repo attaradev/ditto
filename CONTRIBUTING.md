@@ -68,6 +68,22 @@ go test -race ./...
 go test -tags=integration -race -count=1 -timeout=15m ./engine/...
 ```
 
+For Python SDK changes:
+
+```bash
+cd sdk/python
+pip install -e ".[pytest]"
+python -m pytest
+```
+
+For JavaScript SDK changes:
+
+```bash
+cd sdk/javascript
+npm install
+npm test
+```
+
 If your change affects docs, check links and fenced code blocks as part of the review. If you have
 `markdownlint-cli2` installed locally, run it before opening the PR.
 

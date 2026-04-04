@@ -8,6 +8,12 @@ TypeScript client for provisioning ephemeral database copies from a running ditt
 npm install @attaradev/ditto-sdk
 ```
 
+For development from a repository checkout:
+
+```bash
+npm install ./sdk/javascript
+```
+
 ## Usage
 
 ```ts
