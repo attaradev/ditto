@@ -14,7 +14,7 @@ func TestResolveHostConfiguredOverrideWins(t *testing.T) {
 
 	var seen []string
 	host, err := resolveHost(
-		context.Background(),
+		t.Context(),
 		"unix:///configured.sock",
 		os.Getenv,
 		func(_ context.Context, host string) error {
@@ -38,7 +38,7 @@ func TestResolveHostUsesEnvBeforeDefault(t *testing.T) {
 
 	var seen []string
 	host, err := resolveHost(
-		context.Background(),
+		t.Context(),
 		"",
 		os.Getenv,
 		func(_ context.Context, host string) error {
@@ -60,7 +60,7 @@ func TestResolveHostUsesEnvBeforeDefault(t *testing.T) {
 func TestResolveHostFallsBackToDefaultSocket(t *testing.T) {
 	var seen []string
 	host, err := resolveHost(
-		context.Background(),
+		t.Context(),
 		"",
 		func(string) string { return "" },
 		func(_ context.Context, host string) error {
@@ -80,7 +80,7 @@ func TestResolveHostDoesNotFallbackPastBrokenEnvOverride(t *testing.T) {
 	t.Setenv("DOCKER_HOST", "unix:///broken.sock")
 
 	_, err := resolveHost(
-		context.Background(),
+		t.Context(),
 		"",
 		os.Getenv,
 		func(_ context.Context, host string) error {
@@ -97,7 +97,7 @@ func TestResolveHostDoesNotFallbackPastBrokenEnvOverride(t *testing.T) {
 
 func TestResolveHostMissingDaemonReturnsHelpfulError(t *testing.T) {
 	_, err := resolveHost(
-		context.Background(),
+		t.Context(),
 		"",
 		func(string) string { return "" },
 		func(_ context.Context, host string) error {

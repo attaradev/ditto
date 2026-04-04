@@ -163,7 +163,7 @@ func (s *Scheduler) bakeObfuscation(ctx context.Context, rawPath, outPath string
 		return fmt.Errorf("start staging container: %w", err)
 	}
 	defer func() {
-		_ = s.docker.ContainerStop(context.Background(), ctrName, container.StopOptions{Timeout: dockerutil.IntPtr(10)})
+		_ = s.docker.ContainerStop(context.Background(), ctrName, container.StopOptions{Timeout: new(10)})
 		_ = s.docker.ContainerRemove(context.Background(), ctrID, container.RemoveOptions{Force: true})
 	}()
 

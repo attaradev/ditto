@@ -186,10 +186,6 @@ func readContainerLogs(ctx context.Context, cli *client.Client, containerID stri
 	return buf.String(), nil
 }
 
-// IntPtr returns a pointer to i. Useful for Docker API fields that take *int
-// (e.g. container.StopOptions.Timeout).
-func IntPtr(i int) *int { return &i }
-
 // Exec runs cmd inside an existing container through the Docker SDK.
 func Exec(ctx context.Context, cli *client.Client, containerID string, cmd []string, stdin io.Reader) error {
 	if len(cmd) == 0 {

@@ -69,13 +69,11 @@ func TestPortPoolConcurrency(t *testing.T) {
 	results := make([]result, goroutines)
 
 	var wg sync.WaitGroup
-	wg.Add(goroutines)
 	for i := range goroutines {
-		go func(idx int) {
-			defer wg.Done()
+		wg.Go(func() {
 			port, err := pool.Allocate()
-			results[idx] = result{port: port, err: err}
-		}(i)
+			results[i] = result{port: port, err: err}
+		})
 	}
 	wg.Wait()
 

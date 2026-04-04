@@ -1,7 +1,6 @@
 package obfuscation
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -275,14 +274,14 @@ func TestBuildSQL_Replace_UnknownType(t *testing.T) {
 func TestApply_EmptyRules_NoDBNeeded(t *testing.T) {
 	// With no rules, Apply must return nil without ever opening a DB connection.
 	o := New("postgres", "postgres://nobody:nobody@localhost:9999/nodb", nil)
-	if err := o.Apply(context.Background()); err != nil {
+	if err := o.Apply(t.Context()); err != nil {
 		t.Fatalf("Apply with empty rules returned error: %v", err)
 	}
 }
 
 func TestApply_UnknownEngine(t *testing.T) {
 	o := New("oracle", "oracle://...", []config.ObfuscationRule{rule("t", "c", "nullify")})
-	if err := o.Apply(context.Background()); err == nil {
+	if err := o.Apply(t.Context()); err == nil {
 		t.Fatal("expected error for unknown engine, got nil")
 	}
 }

@@ -67,7 +67,7 @@ func TestAtomicSwap(t *testing.T) {
 
 	sched := newTestScheduler(t, destPath, &dumpMock{content: []byte("fake dump data")})
 
-	if err := sched.RunOnce(context.Background()); err != nil {
+	if err := sched.RunOnce(t.Context()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 
@@ -93,7 +93,7 @@ func TestAtomicSwapFailedDumpPreservesOld(t *testing.T) {
 
 	sched := newTestScheduler(t, destPath, &dumpMock{dumpErr: os.ErrPermission})
 
-	if err := sched.RunOnce(context.Background()); err == nil {
+	if err := sched.RunOnce(t.Context()); err == nil {
 		t.Fatal("expected error from failed dump, got nil")
 	}
 
