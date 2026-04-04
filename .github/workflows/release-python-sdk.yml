@@ -6,7 +6,7 @@ on:
       - "sdk-python-v*.*.*"
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -42,3 +42,6 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sdk/python/dist
+      - name: Delete tag on failure
+        if: failure()
+        run: git push --delete origin "${{ github.ref_name }}"

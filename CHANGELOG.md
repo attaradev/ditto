@@ -5,7 +5,7 @@ All notable changes to ditto are documented in this file.
 This changelog starts with the current unreleased product snapshot. Earlier history is available in
 `git log`.
 
-## Unreleased
+## 0.1.0 — 2026-04-04
 
 ### Added
 
@@ -17,5 +17,5 @@ This changelog starts with the current unreleased product snapshot. Earlier hist
 - `erd` command for Mermaid and DBML schema export from a temporary copy or the source database
 - Config-driven obfuscation rules plus secret resolution from environment variables, files, and AWS
   Secrets Manager
-- Go and Python SDKs for programmatic copy lifecycle management
+- Go, Python, and TypeScript/JavaScript SDKs for programmatic copy lifecycle management
 - Repository documentation, contributor guidance, security policy, and release automation
