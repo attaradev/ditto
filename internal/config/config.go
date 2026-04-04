@@ -15,20 +15,21 @@ type Config struct {
 	Source Source `mapstructure:"source"`
 	Dump   Dump   `mapstructure:"dump"`
 
-	CopyTTLSeconds int    `mapstructure:"copy_ttl_seconds"`
-	PortPoolStart  int    `mapstructure:"port_pool_start"`
-	PortPoolEnd    int    `mapstructure:"port_pool_end"`
-	WarmPoolSize   int          `mapstructure:"warm_pool_size"`  // 0 = disabled (default)
-	CopyImage      string       `mapstructure:"copy_image"`      // optional Docker image override
+	CopyTTLSeconds int          `mapstructure:"copy_ttl_seconds"`
+	PortPoolStart  int          `mapstructure:"port_pool_start"`
+	PortPoolEnd    int          `mapstructure:"port_pool_end"`
+	WarmPoolSize   int          `mapstructure:"warm_pool_size"` // 0 = disabled (default)
+	CopyImage      string       `mapstructure:"copy_image"`     // optional Docker image override
+	DockerHost     string       `mapstructure:"docker_host"`    // optional Docker-compatible daemon host override
 	Server         ServerConfig `mapstructure:"server"`
 	Obfuscation    Obfuscation  `mapstructure:"obfuscation"`
 }
 
 // ServerConfig holds HTTP server and authentication settings for ditto serve.
 type ServerConfig struct {
-	Addr        string `mapstructure:"addr"`          // listen address, default ":8080"
-	Token       string `mapstructure:"token"`         // plaintext Bearer token (dev only)
-	TokenSecret string `mapstructure:"token_secret"`  // secret reference: env:VAR, file:/path, or arn:aws:...
+	Addr        string `mapstructure:"addr"`         // listen address, default ":8080"
+	Token       string `mapstructure:"token"`        // plaintext Bearer token (dev only)
+	TokenSecret string `mapstructure:"token_secret"` // secret reference: env:VAR, file:/path, or arn:aws:...
 }
 
 // Source holds connection parameters for the RDS source database.
@@ -53,7 +54,7 @@ type Obfuscation struct {
 type ObfuscationRule struct {
 	Table    string `mapstructure:"table"`
 	Column   string `mapstructure:"column"`
-	Strategy string `mapstructure:"strategy"` // nullify | redact | mask | hash | replace
+	Strategy string `mapstructure:"strategy"`  // nullify | redact | mask | hash | replace
 	With     string `mapstructure:"with"`      // redact: replacement text (default "[redacted]")
 	MaskChar string `mapstructure:"mask_char"` // mask: character to use (default "*")
 	KeepLast int    `mapstructure:"keep_last"` // mask: preserve trailing N characters
@@ -65,6 +66,7 @@ type Dump struct {
 	Schedule       string `mapstructure:"schedule"`
 	Path           string `mapstructure:"path"`
 	StaleThreshold int    `mapstructure:"stale_threshold"` // seconds
+	ClientImage    string `mapstructure:"client_image"`    // optional helper image override for dump operations
 }
 
 // Load reads and validates the config file at path. Environment variables
@@ -82,7 +84,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("dump.schedule", "0 * * * *")
 	v.SetDefault("dump.path", "/data/dump/latest.gz")
 	v.SetDefault("dump.stale_threshold", 7200)
+	v.SetDefault("dump.client_image", "")
 	v.SetDefault("warm_pool_size", 0)
+	v.SetDefault("docker_host", "")
 	v.SetDefault("server.addr", ":8080")
 
 	v.SetEnvPrefix("DITTO")

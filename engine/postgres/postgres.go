@@ -4,17 +4,21 @@
 package postgres
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
 	"net"
-	"os"
-	"os/exec"
+	"path"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/attaradev/ditto/engine"
+	"github.com/attaradev/ditto/internal/dockerutil"
 	"github.com/attaradev/ditto/internal/secret"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/client"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx stdlib driver for database/sql
 )
 
@@ -31,47 +35,70 @@ func (e *Engine) Name() string { return "postgres" }
 
 func (e *Engine) ContainerImage() string { return "postgres:16-alpine" }
 
+func (e *Engine) ContainerEnv() []string {
+	return []string{
+		"POSTGRES_USER=ditto",
+		"POSTGRES_PASSWORD=ditto",
+		"POSTGRES_DB=ditto",
+	}
+}
+
 func (e *Engine) ConnectionString(host string, port int) string {
 	return fmt.Sprintf("postgres://ditto:ditto@%s:%d/ditto?sslmode=disable", host, port)
 }
 
-// Dump runs pg_dump against src and writes a custom-format compressed dump
-// to destPath. Uses exec.CommandContext so context cancellation kills the
-// subprocess. The password is passed via PGPASSWORD to avoid it appearing
-// in process listings.
-func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath string) error {
+// Dump runs pg_dump inside a short-lived helper container and writes a
+// custom-format compressed dump to destPath.
+func (e *Engine) Dump(
+	ctx context.Context,
+	docker *client.Client,
+	clientImage string,
+	src engine.SourceConfig,
+	destPath string,
+) error {
+	if docker == nil {
+		return fmt.Errorf("postgres: docker runtime is required")
+	}
+	if err := validateSourceHost(src.Host); err != nil {
+		return fmt.Errorf("postgres: %w", err)
+	}
 	password, err := e.secretCache.Resolve(ctx, src.PasswordSecret, src.Password)
 	if err != nil {
 		return fmt.Errorf("postgres: resolve password: %w", err)
 	}
-
-	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("postgres: create dump file: %w", err)
+	if clientImage == "" {
+		clientImage = e.ContainerImage()
 	}
 
-	dsn := fmt.Sprintf("host=%s port=%d dbname=%s user=%s sslmode=require",
-		src.Host, src.Port, src.Database, src.User)
-
-	// #nosec G204 -- pg_dump is invoked without a shell and config values are passed as argv.
-	cmd := exec.CommandContext(ctx,
-		"pg_dump",
-		"--format=custom",
-		"--compress=9",
-		"--no-owner",
-		"--no-acl",
-		dsn,
-	)
-	cmd.Stdout = f
-	cmd.Env = append(os.Environ(), "PGPASSWORD="+password)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("postgres: pg_dump failed: %w\n%s", err, stderr.Bytes())
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("postgres: close dump file: %w", err)
+	if err := dockerutil.RunContainer(ctx, docker,
+		&container.Config{
+			Image:      clientImage,
+			Entrypoint: []string{"pg_dump"},
+			Cmd: []string{
+				"--format=custom",
+				"--compress=9",
+				"--no-owner",
+				"--no-acl",
+				"--file=" + path.Join("/dump", filepath.Base(destPath)),
+				"--host=" + src.Host,
+				fmt.Sprintf("--port=%d", src.Port),
+				"--dbname=" + src.Database,
+				"--username=" + src.User,
+			},
+			Env: []string{"PGPASSWORD=" + password},
+		},
+		&container.HostConfig{
+			Mounts: []mount.Mount{
+				{
+					Type:   mount.TypeBind,
+					Source: filepath.Dir(destPath),
+					Target: "/dump",
+				},
+			},
+		},
+		"",
+	); err != nil {
+		return fmt.Errorf("postgres: dump helper failed: %w", err)
 	}
 	return nil
 }
@@ -80,19 +107,41 @@ func (e *Engine) Dump(ctx context.Context, src engine.SourceConfig, destPath str
 // containerName is the Docker container name (e.g. "ditto-<id>") as set by the
 // copy manager. The manager calls WaitReady before Restore, so readiness is
 // already guaranteed when this method is invoked.
-func (e *Engine) Restore(ctx context.Context, dumpPath string, containerName string) error {
-	// #nosec G204 -- docker is invoked without a shell and the container name is internally generated.
-	cmd := exec.CommandContext(ctx,
-		"docker", "exec", containerName,
+func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath string, containerName string) error {
+	if docker == nil {
+		return fmt.Errorf("postgres: docker runtime is required")
+	}
+	if err := dockerutil.Exec(ctx, docker, containerName, []string{
 		"pg_restore",
 		"--username=ditto",
 		"--dbname=ditto",
 		"--no-owner",
 		"--no-acl",
-		"/dump/latest.gz",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("postgres: pg_restore failed: %w\n%s", err, out)
+		"/dump/" + filepath.Base(dumpPath),
+	}, nil); err != nil {
+		return fmt.Errorf("postgres: restore failed: %w", err)
+	}
+	return nil
+}
+
+// DumpFromContainer creates a compressed dump of the ditto database running
+// inside containerName and writes it to destPath on the host.
+// The container must have its dump directory mounted at /dump (read-write).
+func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string) error {
+	if docker == nil {
+		return fmt.Errorf("postgres: docker runtime is required")
+	}
+	if err := dockerutil.Exec(ctx, docker, containerName, []string{
+		"pg_dump",
+		"--username=ditto",
+		"--dbname=ditto",
+		"--format=custom",
+		"--compress=9",
+		"--no-owner",
+		"--no-acl",
+		"--file=/dump/" + filepath.Base(destPath),
+	}, nil); err != nil {
+		return fmt.Errorf("postgres: dump from container failed: %w", err)
 	}
 	return nil
 }
@@ -137,3 +186,13 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 
 // Ensure Engine satisfies the interface at compile time.
 var _ engine.Engine = (*Engine)(nil)
+
+func validateSourceHost(host string) error {
+	trimmed := strings.TrimSpace(strings.ToLower(host))
+	switch trimmed {
+	case "", "localhost", "127.0.0.1", "::1":
+		return fmt.Errorf("source host %q is not reachable from dump helper containers; use a network-reachable hostname or service address", host)
+	default:
+		return nil
+	}
+}

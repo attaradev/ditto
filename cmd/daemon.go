@@ -20,8 +20,8 @@ func newDaemonCmd() *cobra.Command {
   - Deletes isolated database copies after their TTL expires
   - Recovers copies left mid-transition after a previous crash
 
-Run it on the same host that owns Docker and the local dump file. The process
-blocks until SIGTERM or SIGINT.`,
+Run it on the same host that owns the Docker-compatible runtime and the local
+dump file. The process blocks until SIGTERM or SIGINT.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDaemon(cmd)
 		},

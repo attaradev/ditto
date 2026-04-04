@@ -25,5 +25,6 @@ labels: bug
 
 - ditto version:
 - OS:
-- Docker version:
+- Container runtime and version:
+- `DOCKER_HOST` if set:
 - Go version (if building from source):

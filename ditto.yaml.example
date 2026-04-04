@@ -47,6 +47,13 @@ dump:
   # Default: 7200 (2 × the default hourly schedule).
   stale_threshold: 7200
 
+  # Optional helper image used for dump operations.
+  # Defaults to the engine's built-in image (postgres:16-alpine or mysql:8.4).
+  # Override when the source server needs a different client version:
+  #   client_image: "postgres:15-alpine"
+  #   client_image: "mysql:5.7"
+  # client_image: ""
+
 # Auto-destroy copies older than this many seconds.
 # Individual copies can override this with --ttl on copy create.
 copy_ttl_seconds: 7200
@@ -55,6 +62,9 @@ copy_ttl_seconds: 7200
 # Ensure this range doesn't conflict with other services on the host.
 port_pool_start: 5433
 port_pool_end: 5600
+
+# Optional Docker-compatible daemon host override.
+# docker_host: "unix:///var/run/docker.sock"
 
 # Docker image used for copy containers.
 # Defaults to the engine's built-in image (postgres:16-alpine or mysql:8.4).

@@ -7,18 +7,27 @@ import (
 	"time"
 
 	"github.com/attaradev/ditto/engine"
+	"github.com/docker/docker/client"
 )
 
 type stubEngine struct{ name string }
 
 func (s *stubEngine) Name() string           { return s.name }
 func (s *stubEngine) ContainerImage() string { return "stub:latest" }
+func (s *stubEngine) ContainerEnv() []string { return nil }
 func (s *stubEngine) ConnectionString(host string, port int) string {
 	return fmt.Sprintf("stub://%s:%d", host, port)
 }
-func (s *stubEngine) Dump(_ context.Context, _ engine.SourceConfig, _ string) error { return nil }
-func (s *stubEngine) Restore(_ context.Context, _ string, _ string) error           { return nil }
-func (s *stubEngine) WaitReady(_ int, _ time.Duration) error                        { return nil }
+func (s *stubEngine) Dump(_ context.Context, _ *client.Client, _ string, _ engine.SourceConfig, _ string) error {
+	return nil
+}
+func (s *stubEngine) Restore(_ context.Context, _ *client.Client, _ string, _ string) error {
+	return nil
+}
+func (s *stubEngine) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string) error {
+	return nil
+}
+func (s *stubEngine) WaitReady(_ int, _ time.Duration) error { return nil }
 
 func TestRegistryRegisterAndGet(t *testing.T) {
 	e := &stubEngine{name: "stub-" + t.Name()}

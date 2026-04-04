@@ -12,9 +12,7 @@ dev session—gets an isolated, production-faithful database. No shared state.
 No leftover mutations. No coordination.
 
 ```sh
-export DATABASE_URL=$(ditto copy create)
-go test ./...
-ditto copy delete "$COPY_ID"
+ditto copy run -- go test ./...
 ```
 
 ## Use cases
@@ -100,9 +98,9 @@ go build -o /usr/local/bin/ditto ./cmd/ditto
 
 **Prerequisites:**
 
-- Docker on the same host as the CLI
-- `pg_dump` / `pg_restore` for PostgreSQL sources
-- `mysqldump` / `mysql` for MySQL sources
+- A Docker-compatible runtime on the same host as ditto
+- A source database hostname that is reachable from that runtime
+  `localhost` and `127.0.0.1` on the host are not enough for dump helpers.
 
 Create `ditto.yaml` in the current directory or in `~/.ditto/ditto.yaml`:
 
@@ -118,11 +116,17 @@ source:
 dump:
   schedule: "0 * * * *"
   path: /data/dump/latest.gz
+  # client_image: postgres:15-alpine   # optional helper image override
 
 copy_ttl_seconds: 7200
 port_pool_start: 5433
 port_pool_end: 5600
+# docker_host: unix:///var/run/docker.sock
 ```
+
+ditto runs dump and restore work through the configured runtime, so you do not
+need host-installed `pg_dump`, `pg_restore`, `mysqldump`, `mysql`, or the
+Docker CLI.
 
 Take a first dump, then create a copy:
 
@@ -141,6 +145,7 @@ whether the command succeeds or fails:
 ditto copy run -- go test ./...
 ditto copy run --ttl 30m -- migrate -database "$DATABASE_URL" up
 ditto copy run --server=http://ditto.internal:8080 -- pytest tests/
+ditto copy run --dump s3://my-bucket/latest.gz -- go test ./...
 ```
 
 Two variables are available inside the command:
@@ -166,6 +171,16 @@ COPY_ID=$(echo "$COPY" | jq -r '.id')
 go test ./...
 ditto copy delete "$COPY_ID"
 ```
+
+**Flags:**
+
+| Flag | Purpose |
+| --- | --- |
+| `--format=json\|pipe\|auto` | `pipe` prints only the connection string; `json` includes the copy ID; `auto` (default) pretty-prints to a terminal and acts like `pipe` when stdout is redirected |
+| `--ttl 30m` | Override copy lifetime for this copy |
+| `--label <name>` | Tag the copy with a run identifier (overrides auto-detected CI env vars) |
+| `--dump <uri>` | Restore from a specific file instead of the default dump — accepts a local path, `s3://bucket/key`, or `https://` URL |
+| `--obfuscate` | Apply configured obfuscation rules post-restore; use with `--dump` when the source file has not already been obfuscated |
 
 ### Migration dry-runs
 
@@ -196,7 +211,7 @@ fresh is a single command.
 
 ### One-time setup
 
-**1. Install ditto and ensure Docker is running.**
+**1. Install ditto and ensure a Docker-compatible runtime is running.**
 
 **2. Create `~/.ditto/ditto.yaml`** pointing at your source database:
 
@@ -280,7 +295,14 @@ Your application sees `DATABASE_URL` automatically.
 **Check what's running:**
 
 ```sh
+# Dump freshness and copy capacity at a glance
+ditto status
+
+# All active copies
 ditto copy list
+
+# Lifecycle events for a specific copy
+ditto copy logs <id>
 ```
 
 **Throw one away and start fresh:**
@@ -303,16 +325,16 @@ export DATABASE_URL=$(ditto copy create)
 
 ```makefile
 db:
-	export DATABASE_URL=$$(ditto copy create) && echo $$DATABASE_URL
+    export DATABASE_URL=$$(ditto copy create) && echo $$DATABASE_URL
 
 dev:
-	ditto copy run -- go run ./cmd/api
+    ditto copy run -- go run ./cmd/api
 
 test:
-	ditto copy run -- go test ./...
+    ditto copy run -- go test ./...
 
 migrate:
-	ditto copy run -- migrate -database "$$DATABASE_URL" up
+    ditto copy run -- migrate -database "$$DATABASE_URL" up
 ```
 
 **Shell function** — quick alias for a fresh copy:
@@ -345,7 +367,7 @@ hit with `--server`:
 # On the shared host
 ditto serve
 
-# On each developer's machine (no Docker or dump file needed)
+# On each developer's machine (no local runtime or dump file needed)
 ditto copy run --server=http://ditto.internal:8080 -- go run ./cmd/api
 export DITTO_TOKEN=my-token  # if the server requires auth
 ```
@@ -357,23 +379,23 @@ flowchart TD
     SRC[(Source DB)]
     DUMP["/data/dump/latest.gz"]
     CMD["ditto copy create"]
-    CTR["Docker container\nport 5433"]
+    CTR["Database container\nport 5433"]
     APP["your app / tests"]
     DEL["ditto copy delete &lt;id&gt;"]
     FREE["container destroyed\nport freed"]
 
-    SRC -->|"scheduled dump"| DUMP
+    SRC -->|"scheduled dump (+ obfuscate)"| DUMP
     DUMP --> CMD
-    CMD -->|"restore + obfuscate"| CTR
+    CMD -->|"restore"| CTR
     CTR -->|"DATABASE_URL=...5433/ditto"| APP
     APP --> DEL
     DEL --> FREE
 ```
 
-ditto runs on the same host that owns Docker and the local dump file. One
-SQLite database tracks copy state. There is no separate control plane—the
-only long-running process is `ditto daemon`, which handles scheduled dumps
-and TTL-based cleanup.
+ditto runs on the same host that owns the Docker-compatible runtime and the
+local dump file. One SQLite database tracks copy state. There is no separate
+control plane—the only long-running process is `ditto daemon`, which handles
+scheduled dumps and TTL-based cleanup.
 
 ## CI integration
 
@@ -534,8 +556,12 @@ The daemon refills the pool in the background after each claim.
 
 ### PII obfuscation
 
-Scrub sensitive columns after each restore before the copy is handed to the
-caller. Four strategies are supported:
+When obfuscation rules are configured, `ditto reseed` bakes them into the dump
+once — every copy restored from that file is already PII-free. No scrubbing
+happens at restore time unless you explicitly pass `--obfuscate` (useful when
+restoring a raw external dump via `--dump`).
+
+Five strategies are supported:
 
 | Strategy | Effect |
 | --- | --- |
@@ -595,13 +621,27 @@ obfuscation:
       keep_last: 4         # ************1234
 ```
 
-### Pinned copy image
+### Runtime settings
 
-Override the Docker image used for copy containers to pin a specific version:
+Override the container image used for copy containers to pin a specific version:
 
 ```yaml
 copy_image: "postgres:15-alpine"   # default: postgres:16-alpine
 # copy_image: "mysql:5.7"         # default: mysql:8.4
+```
+
+Override the helper image used for dump operations when the source database
+needs a different client version:
+
+```yaml
+dump:
+  client_image: "postgres:15-alpine"
+```
+
+Point ditto at a specific Docker-compatible daemon:
+
+```yaml
+docker_host: "unix:///var/run/docker.sock"
 ```
 
 ### HTTP server
@@ -629,9 +669,9 @@ configuration file.
 
 ## Operational model
 
-A typical setup runs one host with Docker, the local dump file, the SQLite
-metadata database, and `ditto daemon`. The daemon keeps the dump fresh and
-removes expired copies automatically.
+A typical setup runs one host with a Docker-compatible runtime, the local dump
+file, the SQLite metadata database, and `ditto daemon`. The daemon keeps the
+dump fresh and removes expired copies automatically.
 
 ### Keep dumps fresh
 
@@ -640,7 +680,8 @@ Run `ditto daemon` as a systemd service:
 ```ini
 [Unit]
 Description=ditto daemon
-After=docker.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/ditto daemon
@@ -651,6 +692,8 @@ WorkingDirectory=/home/runner
 [Install]
 WantedBy=multi-user.target
 ```
+
+If you run Docker Engine under systemd, add `After=docker.service` too.
 
 Or a standalone cron job for just the dump:
 
@@ -676,7 +719,8 @@ Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/home/runner/hooks/pre-job.sh
 Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/hooks/post-job.sh
 ```
 
-The runner user must be in the `docker` group:
+The runner user must be able to reach the configured runtime socket. For
+Docker Engine on Linux:
 
 ```bash
 usermod -aG docker runner
@@ -687,10 +731,11 @@ usermod -aG docker runner
 - Credentials are never persisted in SQLite. Resolve them at runtime via
   `env:`, `file:`, or `arn:aws:` secret references.
 - Copy containers bind to `127.0.0.1`, keeping them local to the host.
-- Copies may contain production data. Apply obfuscation rules to scrub PII
-  before copies are handed to callers.
-- Access to the Docker socket is effectively root-level on the host; restrict
-  it accordingly.
+- Configure obfuscation rules so `ditto reseed` scrubs PII into the dump file
+  before any copy is created. Copies restored from a pre-obfuscated dump never
+  expose production data to callers.
+- Access to the container runtime socket is effectively root-level on the host;
+  restrict it accordingly.
 
 See [SECURITY.md](SECURITY.md) for the full security model and disclosure policy.
 

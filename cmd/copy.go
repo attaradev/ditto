@@ -40,9 +40,11 @@ func newCopyCmd() *cobra.Command {
 
 func newCopyCreateCmd() *cobra.Command {
 	var (
-		ttl    string
-		label  string
-		format string
+		ttl       string
+		label     string
+		format    string
+		dump      string
+		obfuscate bool
 	)
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -53,21 +55,31 @@ When stdout is a terminal, ditto prints a summary table. When stdout is a pipe
 or --format=pipe, it prints only the connection string so scripts can capture it.
 Use --format=json when automation needs both the copy ID and the connection string:
 
-    export DATABASE_URL=$(ditto copy create)`,
+    export DATABASE_URL=$(ditto copy create)
+
+Use --dump to restore from a specific file instead of the default dump path:
+
+    ditto copy create --dump /path/to/backup.gz
+    ditto copy create --dump s3://my-bucket/backups/latest.gz
+    ditto copy create --dump https://example.com/dump.gz`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCopyCreate(cmd, ttl, label, format)
+			return runCopyCreate(cmd, ttl, label, format, dump, obfuscate)
 		},
 	}
 	cmd.Flags().StringVar(&ttl, "ttl", "", "Override copy lifetime (for example: 1h, 30m)")
 	cmd.Flags().StringVar(&label, "label", "", "Run identifier to tag this copy (overrides auto-detected DITTO_RUN_ID / CI env vars)")
 	cmd.Flags().StringVar(&format, "format", "auto", "Output format: auto, pipe, json")
+	cmd.Flags().StringVar(&dump, "dump", "", "Dump source: local path, s3://bucket/key, or https:// URL")
+	cmd.Flags().BoolVar(&obfuscate, "obfuscate", false, "Apply obfuscation rules post-restore (use with --dump when source is not pre-obfuscated)")
 	return cmd
 }
 
 func newCopyRunCmd() *cobra.Command {
 	var (
-		ttl   string
-		label string
+		ttl       string
+		label     string
+		dump      string
+		obfuscate bool
 	)
 	cmd := &cobra.Command{
 		Use:   "run [flags] -- <command> [args...]",
@@ -80,6 +92,7 @@ The copy lifecycle is fully automatic:
   ditto copy run -- go test ./...
   ditto copy run --ttl 30m -- migrate -database "$DATABASE_URL" up
   ditto copy run --server=http://ditto.internal:8080 -- pytest tests/
+  ditto copy run --dump s3://my-bucket/latest.gz -- go test ./...
 
 Two environment variables are available to the command:
   DATABASE_URL    — connection string for the copy
@@ -89,11 +102,13 @@ The command's exit code is preserved.`,
 		Args:               cobra.MinimumNArgs(1),
 		DisableFlagParsing: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCopyExec(cmd, ttl, label, args)
+			return runCopyExec(cmd, ttl, label, dump, obfuscate, args)
 		},
 	}
 	cmd.Flags().StringVar(&ttl, "ttl", "", "Copy lifetime (e.g. 1h, 30m); defaults to copy_ttl_seconds in config")
 	cmd.Flags().StringVar(&label, "label", "", "Run identifier tag (overrides auto-detected DITTO_RUN_ID)")
+	cmd.Flags().StringVar(&dump, "dump", "", "Dump source: local path, s3://bucket/key, or https:// URL")
+	cmd.Flags().BoolVar(&obfuscate, "obfuscate", false, "Apply obfuscation rules post-restore (use with --dump when source is not pre-obfuscated)")
 	return cmd
 }
 

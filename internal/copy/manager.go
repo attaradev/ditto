@@ -10,6 +10,7 @@ import (
 
 	"github.com/attaradev/ditto/engine"
 	"github.com/attaradev/ditto/internal/config"
+	"github.com/attaradev/ditto/internal/dockerutil"
 	"github.com/attaradev/ditto/internal/obfuscation"
 	"github.com/attaradev/ditto/internal/store"
 	"github.com/docker/docker/api/types/container"
@@ -37,21 +38,18 @@ type Manager struct {
 	refiller *WarmPoolRefiller
 }
 
-// NewManager creates a Manager. The Docker client is created with API version
-// negotiation so it works against different daemon versions.
+// NewManager creates a Manager from an already-resolved Docker-compatible
+// runtime client.
 func NewManager(
 	cfg *config.Config,
 	eng engine.Engine,
 	copies *store.CopyStore,
 	events *store.EventStore,
 	ports *PortPool,
+	docker *client.Client,
 ) (*Manager, error) {
-	docker, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("copy: create docker client: %w", err)
+	if docker == nil {
+		return nil, fmt.Errorf("copy: docker runtime is required")
 	}
 	m := &Manager{
 		cfg:    cfg,
@@ -79,6 +77,8 @@ type CreateOptions struct {
 	TTLSeconds int
 	RunID      string // optional: identifies the run/session that created this copy
 	JobName    string // optional: identifies the job/task within the run
+	DumpPath   string // optional: override dump path (local, s3://, http://); empty = use cfg.Dump.Path
+	Obfuscate  bool   // apply post-restore obfuscation rules (explicit opt-in)
 }
 
 // Create provisions a new ephemeral database copy. When a pre-warmed copy is
@@ -217,6 +217,9 @@ func (m *Manager) provisionWarm(ctx context.Context) (*store.Copy, error) {
 // provisionWarm. warm=true marks the copy for pool pre-warming.
 func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, warm bool) (*store.Copy, error) {
 	dumpPath := m.cfg.Dump.Path
+	if opts.DumpPath != "" {
+		dumpPath = opts.DumpPath
+	}
 	if err := checkDump(dumpPath, m.cfg.Dump.StaleThreshold); err != nil {
 		return nil, err
 	}
@@ -278,13 +281,14 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 	}
 
 	// Restore the dump.
-	if err := m.eng.Restore(ctx, dumpPath, containerName(id)); err != nil {
+	if err := m.eng.Restore(ctx, m.docker, dumpPath, containerName(id)); err != nil {
 		cleanup(err)
 		return nil, fmt.Errorf("copy.Create restore: %w", err)
 	}
 
-	// Apply PII obfuscation rules (no-op when rules is empty).
-	if len(m.cfg.Obfuscation.Rules) > 0 {
+	// Apply post-restore obfuscation only when explicitly requested via --obfuscate.
+	// Standard copies skip this because ditto reseed already bakes rules into the dump.
+	if opts.Obfuscate && len(m.cfg.Obfuscation.Rules) > 0 {
 		connStr := m.eng.ConnectionString("localhost", port)
 		obf := obfuscation.New(m.eng.Name(), connStr, m.cfg.Obfuscation.Rules)
 		if err := obf.Apply(ctx); err != nil {
@@ -322,11 +326,14 @@ func (m *Manager) startContainer(ctx context.Context, id string, port int, dumpP
 	if image == "" {
 		image = m.eng.ContainerImage()
 	}
+	if err := dockerutil.EnsureImage(ctx, m.docker, image); err != nil {
+		return "", fmt.Errorf("container image %s: %w", image, err)
+	}
 
 	resp, err := m.docker.ContainerCreate(ctx,
 		&container.Config{
 			Image: image,
-			Env:   containerEnv(m.eng.Name()),
+			Env:   m.eng.ContainerEnv(),
 			ExposedPorts: nat.PortSet{
 				exposedPort: struct{}{},
 			},
@@ -362,29 +369,6 @@ func (m *Manager) startContainer(ctx context.Context, id string, port int, dumpP
 		return "", fmt.Errorf("container start: %w", err)
 	}
 	return resp.ID, nil
-}
-
-// containerEnv returns the Docker env vars that configure the database user
-// and password inside the container. The copy always uses a fixed
-// user/password/dbname so the connection string is predictable.
-func containerEnv(engineName string) []string {
-	switch engineName {
-	case "postgres":
-		return []string{
-			"POSTGRES_USER=ditto",
-			"POSTGRES_PASSWORD=ditto",
-			"POSTGRES_DB=ditto",
-		}
-	case "mysql":
-		return []string{
-			"MYSQL_USER=ditto",
-			"MYSQL_PASSWORD=ditto",
-			"MYSQL_DATABASE=ditto",
-			"MYSQL_ROOT_PASSWORD=ditto-root",
-		}
-	default:
-		return nil
-	}
 }
 
 func containerName(id string) string { return "ditto-" + id }

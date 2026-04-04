@@ -22,10 +22,12 @@ dump:
   schedule: "0 * * * *"
   path: /data/dump/latest.gz
   stale_threshold: 7200
+  client_image: postgres:15-alpine
 
 copy_ttl_seconds: 7200
 port_pool_start: 5433
 port_pool_end: 5600
+docker_host: unix:///var/run/docker.sock
 `
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "ditto.yaml")
@@ -49,6 +51,12 @@ port_pool_end: 5600
 	}
 	if cfg.PortPoolStart != 5433 {
 		t.Errorf("PortPoolStart: got %d, want 5433", cfg.PortPoolStart)
+	}
+	if cfg.Dump.ClientImage != "postgres:15-alpine" {
+		t.Errorf("Dump.ClientImage: got %q", cfg.Dump.ClientImage)
+	}
+	if cfg.DockerHost != "unix:///var/run/docker.sock" {
+		t.Errorf("DockerHost: got %q", cfg.DockerHost)
 	}
 }
 

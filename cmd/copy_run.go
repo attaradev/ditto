@@ -11,6 +11,7 @@ import (
 	"time"
 
 	copypkg "github.com/attaradev/ditto/internal/copy"
+	"github.com/attaradev/ditto/internal/dumpfetch"
 	"github.com/attaradev/ditto/internal/store"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -68,7 +69,7 @@ func detectJobName() string {
 	return ""
 }
 
-func runCopyCreate(cmd *cobra.Command, ttl, label, format string) error {
+func runCopyCreate(cmd *cobra.Command, ttl, label, format, dumpURI string, obfuscate bool) error {
 	client := copyClientFromContext(cmd)
 
 	runID := label
@@ -86,6 +87,15 @@ func runCopyCreate(cmd *cobra.Command, ttl, label, format string) error {
 		}
 		opts.TTLSeconds = int(d.Seconds())
 	}
+	if dumpURI != "" {
+		localPath, cleanup, err := dumpfetch.Fetch(cmd.Context(), dumpURI)
+		if err != nil {
+			return fmt.Errorf("--dump: %w", err)
+		}
+		defer cleanup()
+		opts.DumpPath = localPath
+	}
+	opts.Obfuscate = obfuscate
 
 	c, err := client.Create(cmd.Context(), opts)
 	if err != nil {
@@ -161,7 +171,7 @@ var (
 // runCopyExec creates a copy, runs command with DATABASE_URL set, then destroys
 // the copy regardless of how the command exits. The command's exit code is
 // propagated: callers can inspect it via ExitError.
-func runCopyExec(cmd *cobra.Command, ttl, label string, command []string) error {
+func runCopyExec(cmd *cobra.Command, ttl, label, dumpURI string, obfuscate bool, command []string) error {
 	client := copyClientFromContext(cmd)
 	ctx := cmd.Context()
 
@@ -180,6 +190,15 @@ func runCopyExec(cmd *cobra.Command, ttl, label string, command []string) error 
 		}
 		opts.TTLSeconds = int(d.Seconds())
 	}
+	if dumpURI != "" {
+		localPath, cleanup, err := dumpfetch.Fetch(ctx, dumpURI)
+		if err != nil {
+			return fmt.Errorf("--dump: %w", err)
+		}
+		defer cleanup()
+		opts.DumpPath = localPath
+	}
+	opts.Obfuscate = obfuscate
 
 	c, err := client.Create(ctx, opts)
 	if err != nil {

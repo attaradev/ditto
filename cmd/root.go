@@ -9,6 +9,7 @@ import (
 	"github.com/attaradev/ditto/engine"
 	"github.com/attaradev/ditto/internal/config"
 	copypkg "github.com/attaradev/ditto/internal/copy"
+	"github.com/attaradev/ditto/internal/dockerutil"
 	dumppkg "github.com/attaradev/ditto/internal/dump"
 	dittostore "github.com/attaradev/ditto/internal/store"
 	isatty "github.com/mattn/go-isatty"
@@ -26,6 +27,7 @@ const (
 	keyScheduler
 	keyConfig
 	keyServerURL
+	keyLocalInitErr
 )
 
 // NewRootCmd constructs the root cobra command. dbPath and cfgPath are
@@ -69,24 +71,36 @@ Use it when shared staging databases make test runs flaky, schema fidelity matte
 		ctx = context.WithValue(ctx, keyEventStore, es)
 
 		// Load config (best-effort — some commands don't need it).
-		cfg, _ := config.Load(cfgPath)
+		cfg, cfgErr := config.Load(cfgPath)
+		if cfgErr != nil {
+			ctx = context.WithValue(ctx, keyLocalInitErr, cfgErr)
+		}
 		if cfg != nil {
 			ctx = context.WithValue(ctx, keyConfig, cfg)
 
 			// Initialise copy manager and dump scheduler when config is available.
 			eng, engErr := engineFromConfig(cfg)
-			if engErr == nil {
-				// Load occupied ports from SQLite.
-				occupied := occupiedPorts(cs)
-				pool := copypkg.NewPortPool(cfg.PortPoolStart, cfg.PortPoolEnd, occupied)
+			if engErr != nil {
+				ctx = context.WithValue(ctx, keyLocalInitErr, engErr)
+			} else if cfgErr == nil {
+				docker, _, dockerErr := dockerutil.NewClient(ctx, cfg.DockerHost)
+				if dockerErr != nil {
+					ctx = context.WithValue(ctx, keyLocalInitErr, dockerErr)
+				} else {
+					// Load occupied ports from SQLite.
+					occupied := occupiedPorts(cs)
+					pool := copypkg.NewPortPool(cfg.PortPoolStart, cfg.PortPoolEnd, occupied)
 
-				mgr, mgrErr := copypkg.NewManager(cfg, eng, cs, es, pool)
-				if mgrErr == nil {
-					ctx = context.WithValue(ctx, keyManager, mgr)
+					mgr, mgrErr := copypkg.NewManager(cfg, eng, cs, es, pool, docker)
+					if mgrErr != nil {
+						ctx = context.WithValue(ctx, keyLocalInitErr, mgrErr)
+					} else {
+						ctx = context.WithValue(ctx, keyManager, mgr)
+					}
+
+					sched := dumppkg.New(cfg, eng, es, docker)
+					ctx = context.WithValue(ctx, keyScheduler, sched)
 				}
-
-				sched := dumppkg.New(cfg, eng, es)
-				ctx = context.WithValue(ctx, keyScheduler, sched)
 			}
 		}
 
@@ -117,7 +131,7 @@ func eventStoreFromContext(cmd *cobra.Command) *dittostore.EventStore {
 func managerFromContext(cmd *cobra.Command) *copypkg.Manager {
 	v := cmd.Context().Value(keyManager)
 	if v == nil {
-		fmt.Fprintln(os.Stderr, "error: ditto.yaml not found or missing required fields — run with a valid config")
+		fmt.Fprintln(os.Stderr, "error:", localInitError(cmd))
 		os.Exit(1)
 	}
 	return v.(*copypkg.Manager)
@@ -126,7 +140,7 @@ func managerFromContext(cmd *cobra.Command) *copypkg.Manager {
 func schedulerFromContext(cmd *cobra.Command) *dumppkg.Scheduler {
 	v := cmd.Context().Value(keyScheduler)
 	if v == nil {
-		fmt.Fprintln(os.Stderr, "error: ditto.yaml not found or missing required fields — run with a valid config")
+		fmt.Fprintln(os.Stderr, "error:", localInitError(cmd))
 		os.Exit(1)
 	}
 	return v.(*dumppkg.Scheduler)
@@ -155,6 +169,13 @@ func activeFilter() dittostore.ListFilter {
 			dittostore.StatusDestroying,
 		},
 	}
+}
+
+func localInitError(cmd *cobra.Command) error {
+	if err, ok := cmd.Context().Value(keyLocalInitErr).(error); ok && err != nil {
+		return err
+	}
+	return fmt.Errorf("ditto.yaml not found or missing required fields — run with a valid config")
 }
 
 func occupiedPorts(cs *dittostore.CopyStore) []int {

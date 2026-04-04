@@ -10,6 +10,7 @@ import (
 	"github.com/attaradev/ditto/engine"
 	"github.com/attaradev/ditto/internal/config"
 	"github.com/attaradev/ditto/internal/store"
+	"github.com/docker/docker/client"
 )
 
 // dumpMock is a minimal engine.Engine whose Dump writes fixed content to the
@@ -19,12 +20,18 @@ type dumpMock struct {
 	dumpErr error
 }
 
-func (d *dumpMock) Name() string                                     { return "mock" }
-func (d *dumpMock) ContainerImage() string                           { return "mock:latest" }
-func (d *dumpMock) ConnectionString(host string, port int) string    { return "mock://" }
-func (d *dumpMock) WaitReady(_ int, _ time.Duration) error           { return nil }
-func (d *dumpMock) Restore(_ context.Context, _ string, _ string) error { return nil }
-func (d *dumpMock) Dump(_ context.Context, _ engine.SourceConfig, dest string) error {
+func (d *dumpMock) Name() string                                  { return "mock" }
+func (d *dumpMock) ContainerImage() string                        { return "mock:latest" }
+func (d *dumpMock) ContainerEnv() []string                        { return nil }
+func (d *dumpMock) ConnectionString(host string, port int) string { return "mock://" }
+func (d *dumpMock) WaitReady(_ int, _ time.Duration) error        { return nil }
+func (d *dumpMock) Restore(_ context.Context, _ *client.Client, _ string, _ string) error {
+	return nil
+}
+func (d *dumpMock) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string) error {
+	return nil
+}
+func (d *dumpMock) Dump(_ context.Context, _ *client.Client, _ string, _ engine.SourceConfig, dest string) error {
 	if d.dumpErr != nil {
 		return d.dumpErr
 	}
@@ -51,7 +58,7 @@ func newTestScheduler(t *testing.T, destPath string, eng engine.Engine) *Schedul
 		},
 		Dump: config.Dump{Path: destPath},
 	}
-	return New(cfg, eng, store.NewEventStore(db))
+	return New(cfg, eng, store.NewEventStore(db), nil)
 }
 
 func TestAtomicSwap(t *testing.T) {
