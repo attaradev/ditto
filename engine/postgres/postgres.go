@@ -10,7 +10,6 @@ import (
 	"net"
 	"path"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/attaradev/ditto/engine"
@@ -59,7 +58,7 @@ func (e *Engine) Dump(
 	if docker == nil {
 		return fmt.Errorf("postgres: docker runtime is required")
 	}
-	if err := validateSourceHost(src.Host); err != nil {
+	if err := engine.ValidateSourceHost(src.Host); err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
 	password, err := e.secretCache.Resolve(ctx, src.PasswordSecret, src.Password)
@@ -187,12 +186,3 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 // Ensure Engine satisfies the interface at compile time.
 var _ engine.Engine = (*Engine)(nil)
 
-func validateSourceHost(host string) error {
-	trimmed := strings.TrimSpace(strings.ToLower(host))
-	switch trimmed {
-	case "", "localhost", "127.0.0.1", "::1":
-		return fmt.Errorf("source host %q is not reachable from dump helper containers; use a network-reachable hostname or service address", host)
-	default:
-		return nil
-	}
-}

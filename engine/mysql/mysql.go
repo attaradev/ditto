@@ -13,7 +13,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/attaradev/ditto/engine"
@@ -63,7 +62,7 @@ func (e *Engine) Dump(
 	if docker == nil {
 		return fmt.Errorf("mysql: docker runtime is required")
 	}
-	if err := validateSourceHost(src.Host); err != nil {
+	if err := engine.ValidateSourceHost(src.Host); err != nil {
 		return fmt.Errorf("mysql: %w", err)
 	}
 	password, err := e.secretCache.Resolve(ctx, src.PasswordSecret, src.Password)
@@ -213,16 +212,6 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 }
 
 var _ engine.Engine = (*Engine)(nil)
-
-func validateSourceHost(host string) error {
-	trimmed := strings.TrimSpace(strings.ToLower(host))
-	switch trimmed {
-	case "", "localhost", "127.0.0.1", "::1":
-		return fmt.Errorf("source host %q is not reachable from dump helper containers; use a network-reachable hostname or service address", host)
-	default:
-		return nil
-	}
-}
 
 func gzipFile(srcPath string, destPath string) error {
 	src, err := os.Open(srcPath)

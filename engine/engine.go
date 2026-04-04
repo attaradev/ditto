@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -56,4 +58,16 @@ type Engine interface {
 
 	// ConnectionString returns a DSN for connecting to the copy on port.
 	ConnectionString(host string, port int) string
+}
+
+// ValidateSourceHost rejects loopback addresses that are unreachable from
+// dump helper containers. Both the postgres and mysql engines call this.
+func ValidateSourceHost(host string) error {
+	trimmed := strings.TrimSpace(strings.ToLower(host))
+	switch trimmed {
+	case "", "localhost", "127.0.0.1", "::1":
+		return fmt.Errorf("source host %q is not reachable from dump helper containers; use a network-reachable hostname or service address", host)
+	default:
+		return nil
+	}
 }
