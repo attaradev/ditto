@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/attaradev/ditto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/attaradev/ditto/actions/workflows/ci.yml)
 
-## Real production data. Zero risk. For every run.
+## Real production data. Zero risk. For every run
 
 ditto provisions isolated Postgres and MySQL copies from a scheduled production
 dump — with PII obfuscated once at source, so every copy carries real schema and
