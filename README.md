@@ -4,12 +4,12 @@
 
 [![CI](https://github.com/attaradev/ditto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/attaradev/ditto/actions/workflows/ci.yml)
 
-## A clean database for every run
+## Ephemeral Postgres and MySQL database copies for tests, migrations, and local dev
 
-ditto provisions throwaway PostgreSQL or MySQL copies from a scheduled dump.
-Each run—whether a test suite, a migration dry-run, a load test, or a local
-dev session—gets an isolated, production-faithful database. No shared state.
-No leftover mutations. No coordination.
+ditto provisions schema-aware PostgreSQL or MySQL copies from a scheduled dump.
+Each run—whether a test suite, a migration dry-run, or a local dev session—gets
+an isolated, production-faithful database. No shared state. No leftover mutations.
+No control plane.
 
 ```sh
 ditto copy run -- go test ./...
@@ -494,6 +494,83 @@ err := client.WithCopy(ctx, func(dsn string) error {
 })
 ```
 
+### Python SDK
+
+Install with pip:
+
+```sh
+pip install "ditto-sdk[pytest]"
+```
+
+**pytest fixture** — auto-registered when the package is installed; no `conftest.py` needed:
+
+```python
+def test_my_feature(ditto_copy):
+    conn = psycopg2.connect(ditto_copy)
+    # copy is destroyed automatically after the test
+```
+
+Configure via environment variables: `DITTO_SERVER_URL`, `DITTO_TOKEN`, `DITTO_TTL`.
+
+**Programmatic use:**
+
+```python
+from ditto import Client
+
+client = Client(server_url="http://ditto.internal:8080", token="secret")
+
+with client.with_copy() as dsn:
+    run_migrations(dsn)
+```
+
+### ERD generation
+
+Generate an Entity-Relationship Diagram directly from the live schema.
+
+**Via a temporary copy** (default — source database is never queried at render time):
+
+```sh
+ditto erd                          # Mermaid erDiagram to stdout
+ditto erd --format=dbml            # DBML (dbdiagram.io) to stdout
+ditto erd --output=schema.md       # Write to file
+```
+
+**Directly from the source database:**
+
+```sh
+ditto erd --source
+```
+
+Both [Mermaid](https://mermaid.js.org/) and [DBML](https://dbml.dbdiagram.io/) output include
+tables, column types, primary keys, and foreign key relationships.
+
+### Shell environment injection
+
+`ditto env export` creates a copy and prints eval-able shell export lines —
+useful for interactive sessions where `DATABASE_URL` needs to persist across
+multiple commands:
+
+```sh
+eval $(ditto env export)          # creates a copy; sets DATABASE_URL + DITTO_COPY_ID
+psql $DATABASE_URL                # use from any tool
+alembic upgrade head              # run migrations
+ditto env destroy $DITTO_COPY_ID  # clean up when done
+```
+
+Run a single command with a throwaway copy (identical to `ditto copy run`):
+
+```sh
+ditto env -- pytest tests/
+ditto env -- npm run test:integration
+ditto env -- python manage.py migrate
+```
+
+Remote server support:
+
+```sh
+eval $(ditto env export --server=http://ditto.internal:8080)
+```
+
 ## Configuration
 
 ### Minimal config
@@ -750,7 +827,7 @@ FLUSH PRIVILEGES;
 ### Adding a new engine
 
 1. Create `engine/{name}/{name}.go`
-2. Implement the `engine.Engine` interface (6 methods)
+2. Implement the `engine.Engine` interface (8 methods)
 3. Add `func init() { engine.Register(&Engine{}) }`
 4. Add a blank import to `cmd/ditto/main.go`
 
@@ -765,7 +842,7 @@ func init() { engine.Register(&Engine{}) }
 type Engine struct{}
 
 func (e *Engine) Name() string { return "sqlite" }
-// ... implement the remaining 5 methods
+// ... implement the remaining 7 methods
 ```
 
 No changes to core dispatch are required—registering the engine and importing
@@ -786,15 +863,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and conventions.
 | Path | Purpose |
 | --- | --- |
 | `cmd/` | CLI commands and the main entrypoint |
-| `engine/` | Engine interface and database-specific implementations (postgres, mysql) |
+| `engine/` | Engine interface and per-engine implementations (postgres, mysql) |
 | `internal/copy/` | Copy lifecycle, port pool, warm pool, HTTP client |
 | `internal/dump/` | Scheduled source dumps with atomic file replacement |
-| `internal/obfuscation/` | Post-restore PII scrubbing |
+| `internal/dumpfetch/` | Dump URI resolution (local path, s3://, https://) |
+| `internal/erd/` | Schema introspection and ERD rendering (Mermaid, DBML) |
+| `internal/obfuscation/` | Post-restore PII scrubbing rules |
 | `internal/secret/` | Secret resolution (env, file, AWS Secrets Manager) |
 | `internal/server/` | HTTP API server for remote copy operations |
 | `internal/store/` | SQLite metadata for copies and lifecycle events |
 | `pkg/ditto/` | Go SDK — `NewCopy(t)` for use in test suites |
-| `actions/` | GitHub Actions composite actions |
+| `sdk/python/` | Python SDK — `Client` and pytest fixture |
+| `actions/` | GitHub Actions composite actions (create, delete) |
 
 ## License
 

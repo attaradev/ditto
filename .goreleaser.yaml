@@ -47,7 +47,7 @@ brews:
       name: ditto-bot
       email: mpyebattara@gmail.com
     homepage: https://github.com/attaradev/ditto
-    description: "A clean database for every run — isolated Postgres and MariaDB copies for tests, migrations, and local dev"
+    description: "Ephemeral Postgres and MySQL database copies for tests, migrations, and local dev — schema-aware, no shared state, instant isolation."
     license: MIT
     skip_upload: auto
     install: |
@@ -62,7 +62,7 @@ nfpms:
     vendor: Attara
     homepage: https://github.com/attaradev/ditto
     maintainer: Mike Attara <mpyebattara@gmail.com>
-    description: "A clean database for every run — isolated Postgres and MariaDB copies for tests, migrations, and local dev"
+    description: "Ephemeral Postgres and MySQL database copies for tests, migrations, and local dev — schema-aware, no shared state, instant isolation."
     license: MIT
     formats:
       - deb

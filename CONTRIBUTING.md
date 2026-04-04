@@ -5,9 +5,7 @@
 **Prerequisites:**
 
 - Go 1.26+
-- Docker (for integration tests)
-- `pg_dump` / `pg_restore` (for Postgres integration tests)
-- `mysqldump` / `mysql` (for MariaDB integration tests)
+- Docker (required for integration tests; ditto runs pg_dump/mysqldump inside containers — no host tools needed)
 
 ```bash
 git clone https://github.com/attaradev/ditto
@@ -28,7 +26,7 @@ go test -race ./...   # always run with the race detector before opening a PR
 Integration tests require Docker and are gated by a build tag:
 
 ```bash
-go test -tags integration ./internal/copy/...
+go test -tags=integration -timeout=15m ./engine/...
 ```
 
 Individual packages:
@@ -46,16 +44,22 @@ go test ./internal/copy/...    # port pool
 ```text
 engine/              Engine interface + registry + per-engine implementations
   postgres/          PostgreSQL: pg_dump, pg_restore, WaitReady
-  mariadb/           MariaDB: mysqldump, mysql restore, WaitReady
+  mysql/             MySQL / MariaDB: mysqldump, mysql restore, WaitReady
 internal/
   config/            ditto.yaml parsing (viper)
+  copy/              Copy lifecycle, port pool, warm pool, HTTP client
+  dump/              Dump scheduler with atomic file replacement
+  dumpfetch/         Dump URI resolution (local path, s3://, https://)
+  erd/               Schema introspection and ERD rendering (Mermaid, DBML)
+  obfuscation/       Post-restore PII scrubbing rules
+  secret/            Secret resolution (env:, file:, arn:aws:...)
+  server/            HTTP API server for remote copy operations
   store/             SQLite metadata (copies table, events log)
-  copy/              Port pool, copy lifecycle manager
-  dump/              Dump scheduler with atomic file swap
 cmd/
   ditto/main.go      CLI entry point; blank engine imports
   *.go               cobra command implementations
 actions/             GitHub Actions composite actions (create, delete)
+sdk/python/          Python SDK with pytest fixture
 ```
 
 ## Adding a new database engine
@@ -63,7 +67,7 @@ actions/             GitHub Actions composite actions (create, delete)
 Each engine is a self-contained package that registers itself at startup:
 
 1. Create `engine/{name}/{name}.go`
-2. Implement all six methods of `engine.Engine`
+2. Implement all eight methods of `engine.Engine`
 3. Add `func init() { engine.Register(&Engine{}) }` at the bottom
 4. Add a blank import in `cmd/ditto/main.go`:
 
@@ -76,15 +80,17 @@ Each engine is a self-contained package that registers itself at startup:
 
 No changes to any other package are required — the engine registry handles dispatch.
 
-The six methods to implement:
+The eight methods to implement:
 
 | Method | Notes |
 | --- | --- |
 | `Name() string` | Key used in `ditto.yaml` under `source.engine` |
 | `ContainerImage() string` | Pin the tag — never use `latest` |
+| `ContainerEnv() []string` | Env vars to initialise the database in a copy container |
 | `ConnectionString(host, port) string` | DSN for a copy; always uses user `ditto`, password `ditto`, db `ditto` |
-| `Dump(ctx, src, destPath) error` | Write a compressed dump to `destPath`; respect context cancellation |
-| `Restore(ctx, dumpPath, port) error` | Restore into running container; dump dir is bind-mounted at `/dump/` |
+| `Dump(ctx, docker, clientImage, src, destPath, opts) error` | Write a compressed dump; pass `DumpOptions{SchemaOnly: true}` for DDL-only |
+| `DumpFromContainer(ctx, docker, containerName, destPath, opts) error` | Re-dump a running container (used for obfuscation baking) |
+| `Restore(ctx, docker, dumpPath, containerName) error` | Restore into a running container; dump dir bind-mounted at `/dump/` |
 | `WaitReady(port, timeout) error` | TCP dial then `SELECT 1`; poll every 500ms |
 
 ## Code conventions
