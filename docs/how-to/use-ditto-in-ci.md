@@ -184,7 +184,7 @@ npm install ./sdk/javascript
 Example:
 
 ```ts
-import { DittoClient } from "@attaradev/ditto-sdk";
+import { DittoClient } from "ditto-sdk";
 
 const client = new DittoClient({
   serverUrl: "http://ditto.internal:8080",
