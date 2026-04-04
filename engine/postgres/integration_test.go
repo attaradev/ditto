@@ -41,7 +41,7 @@ func TestPostgresDumpRestoreCycle(t *testing.T) {
 		t.Fatalf("pull image: %v", err)
 	}
 
-	srcID := startPGContainer(t, ctx, cli, srcName, netName, srcPort, "src", "src", "srcdb")
+	srcID := startPGContainer(t, ctx, cli, srcName, netName, srcPort, "src", "src", "srcdb", "")
 	t.Cleanup(func() { stopRemove(cli, srcName, srcID) })
 
 	srcDSN := fmt.Sprintf("postgres://src:src@localhost:%d/srcdb?sslmode=disable", srcPort)
@@ -64,7 +64,7 @@ func TestPostgresDumpRestoreCycle(t *testing.T) {
 		t.Fatalf("Dump: %v", err)
 	}
 
-	copyID := startPGContainer(t, ctx, cli, copyName, netName, copyPort, "ditto", "ditto", "ditto")
+	copyID := startPGContainer(t, ctx, cli, copyName, netName, copyPort, "ditto", "ditto", "ditto", dumpDir)
 	t.Cleanup(func() { stopRemove(cli, copyName, copyID) })
 
 	if err := eng.WaitReady(copyPort, 2*time.Minute); err != nil {
@@ -98,7 +98,7 @@ func TestPostgresSchemaOnlyDump(t *testing.T) {
 		t.Fatalf("pull image: %v", err)
 	}
 
-	srcID := startPGContainer(t, ctx, cli, srcName, netName, srcPort, "src", "src", "srcdb")
+	srcID := startPGContainer(t, ctx, cli, srcName, netName, srcPort, "src", "src", "srcdb", "")
 	t.Cleanup(func() { stopRemove(cli, srcName, srcID) })
 
 	srcDSN := fmt.Sprintf("postgres://src:src@localhost:%d/srcdb?sslmode=disable", srcPort)
@@ -121,7 +121,7 @@ func TestPostgresSchemaOnlyDump(t *testing.T) {
 		t.Fatalf("Dump schema-only: %v", err)
 	}
 
-	copyID := startPGContainer(t, ctx, cli, copyName, netName, copyPort, "ditto", "ditto", "ditto")
+	copyID := startPGContainer(t, ctx, cli, copyName, netName, copyPort, "ditto", "ditto", "ditto", dumpDir)
 	t.Cleanup(func() { stopRemove(cli, copyName, copyID) })
 
 	if err := eng.WaitReady(copyPort, 2*time.Minute); err != nil {
@@ -174,10 +174,20 @@ func startPGContainer(
 	name, netName string,
 	hostPort int,
 	user, password, dbname string,
+	dumpDir string,
 ) string {
 	t.Helper()
 	portStr := fmt.Sprintf("%d", hostPort)
 	exposed := nat.Port("5432/tcp")
+
+	mounts := []mount.Mount{}
+	if dumpDir != "" {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: dumpDir,
+			Target: "/dump",
+		})
+	}
 
 	resp, err := cli.ContainerCreate(ctx,
 		&container.Config{
@@ -193,7 +203,7 @@ func startPGContainer(
 			PortBindings: nat.PortMap{
 				exposed: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: portStr}},
 			},
-			Mounts: []mount.Mount{},
+			Mounts: mounts,
 		},
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
