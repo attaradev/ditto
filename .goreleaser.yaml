@@ -59,7 +59,7 @@ nfpms:
   - id: ditto
     builds: [ditto]
     package_name: ditto
-    vendor: Attara
+    vendor: Mike Attara
     homepage: https://github.com/attaradev/ditto
     maintainer: Mike Attara <mpyebattara@gmail.com>
     description: "Real production data, PII scrubbed, isolated for every run — ephemeral Postgres and MySQL copies, no shared state."
