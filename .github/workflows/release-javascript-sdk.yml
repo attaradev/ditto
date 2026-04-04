@@ -37,6 +37,8 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Delete tag on failure
         if: failure()
         run: git push --delete origin "${{ github.ref_name }}"
