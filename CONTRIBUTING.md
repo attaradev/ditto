@@ -41,26 +41,22 @@ go test ./internal/copy/...    # port pool
 
 ## Project layout
 
-```text
-engine/              Engine interface + registry + per-engine implementations
-  postgres/          PostgreSQL: pg_dump, pg_restore, WaitReady
-  mysql/             MySQL / MariaDB: mysqldump, mysql restore, WaitReady
-internal/
-  config/            ditto.yaml parsing (viper)
-  copy/              Copy lifecycle, port pool, warm pool, HTTP client
-  dump/              Dump scheduler with atomic file replacement
-  dumpfetch/         Dump URI resolution (local path, s3://, https://)
-  erd/               Schema introspection and ERD rendering (Mermaid, DBML)
-  obfuscation/       Post-restore PII scrubbing rules
-  secret/            Secret resolution (env:, file:, arn:aws:...)
-  server/            HTTP API server for remote copy operations
-  store/             SQLite metadata (copies table, events log)
-cmd/
-  ditto/main.go      CLI entry point; blank engine imports
-  *.go               cobra command implementations
-actions/             GitHub Actions composite actions (create, delete)
-sdk/python/          Python SDK with pytest fixture
-```
+| Path | Purpose |
+| --- | --- |
+| `cmd/` | CLI commands and the main entrypoint |
+| `engine/` | Engine interface and per-engine implementations (postgres, mysql) |
+| `internal/config/` | `ditto.yaml` parsing (Viper) |
+| `internal/copy/` | Copy lifecycle, port pool, warm pool, HTTP client |
+| `internal/dump/` | Dump scheduler with atomic file replacement |
+| `internal/dumpfetch/` | Dump URI resolution (local path, `s3://`, `https://`) |
+| `internal/erd/` | Schema introspection and ERD rendering (Mermaid, DBML) |
+| `internal/obfuscation/` | Post-restore PII scrubbing rules |
+| `internal/secret/` | Secret resolution (`env:`, `file:`, `arn:aws:...`) |
+| `internal/server/` | HTTP API server for remote copy operations |
+| `internal/store/` | SQLite metadata for copies and lifecycle events |
+| `pkg/ditto/` | Go SDK — `NewCopy(t)` for use in test suites |
+| `sdk/python/` | Python SDK — `Client` and pytest fixture |
+| `actions/` | GitHub Actions composite actions (create, delete) |
 
 ## Adding a new database engine
 
