@@ -5,13 +5,13 @@ TypeScript client for provisioning ephemeral database copies from a running ditt
 ## Install
 
 ```bash
-npm install ditto-sdk
+npm install @attaradev/ditto-sdk
 ```
 
 ## Usage
 
 ```ts
-import { DittoClient } from "ditto-sdk";
+import { DittoClient } from "@attaradev/ditto-sdk";
 
 const client = new DittoClient({
   serverUrl: "http://ditto.internal:8080",
@@ -26,7 +26,7 @@ await client.destroy(copy.id);
 Use `withCopy` when you want automatic cleanup:
 
 ```ts
-import { DittoClient } from "ditto-sdk";
+import { DittoClient } from "@attaradev/ditto-sdk";
 
 const client = new DittoClient({ serverUrl: "http://ditto.internal:8080" });
 
