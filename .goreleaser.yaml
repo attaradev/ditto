@@ -38,7 +38,7 @@ archives:
       - LICENSE
       - ditto.yaml.example
 
-brews:
+homebrew_casks:
   - repository:
       owner: attaradev
       name: homebrew-ditto
@@ -50,10 +50,10 @@ brews:
     description: "Real production data, PII scrubbed, isolated for every run — ephemeral Postgres and MySQL copies, no shared state."
     license: MIT
     skip_upload: auto
-    install: |
-      bin.install "ditto"
-    test: |
-      system "#{bin}/ditto", "--version"
+    binaries:
+      - ditto
+    url:
+      verified: "github.com/attaradev/ditto"
 
 nfpms:
   - id: ditto
