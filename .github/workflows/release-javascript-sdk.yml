@@ -24,6 +24,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: sdk/javascript/package-lock.json
+      - run: npm install -g npm@latest
       - name: Verify tag matches package version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#sdk-js-v}"
@@ -36,8 +37,6 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Delete tag on failure
         if: failure()
         run: git push --delete origin "${{ github.ref_name }}"
