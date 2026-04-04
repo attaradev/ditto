@@ -65,6 +65,7 @@ type ObfuscationRule struct {
 type Dump struct {
 	Schedule       string `mapstructure:"schedule"`
 	Path           string `mapstructure:"path"`
+	SchemaPath     string `mapstructure:"schema_path"`     // optional: path for a schema-only (DDL) dump; empty = disabled
 	StaleThreshold int    `mapstructure:"stale_threshold"` // seconds
 	ClientImage    string `mapstructure:"client_image"`    // optional helper image override for dump operations
 }

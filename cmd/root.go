@@ -114,6 +114,8 @@ Use it when shared staging databases make test runs flaky, schema fidelity matte
 		newStatusCmd(),
 		newDaemonCmd(),
 		newServeCmd(),
+		newErdCmd(),
+		newEnvCmd(),
 	)
 	return root
 }

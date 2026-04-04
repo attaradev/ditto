@@ -18,13 +18,13 @@ func (s *stubEngine) ContainerEnv() []string { return nil }
 func (s *stubEngine) ConnectionString(host string, port int) string {
 	return fmt.Sprintf("stub://%s:%d", host, port)
 }
-func (s *stubEngine) Dump(_ context.Context, _ *client.Client, _ string, _ engine.SourceConfig, _ string) error {
+func (s *stubEngine) Dump(_ context.Context, _ *client.Client, _ string, _ engine.SourceConfig, _ string, _ engine.DumpOptions) error {
 	return nil
 }
 func (s *stubEngine) Restore(_ context.Context, _ *client.Client, _ string, _ string) error {
 	return nil
 }
-func (s *stubEngine) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string) error {
+func (s *stubEngine) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string, _ engine.DumpOptions) error {
 	return nil
 }
 func (s *stubEngine) WaitReady(_ int, _ time.Duration) error { return nil }

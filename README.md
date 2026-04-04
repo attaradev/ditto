@@ -703,22 +703,6 @@ Or a standalone cron job for just the dump:
 
 ### Runner setup (GitHub Actions self-hosted)
 
-Install the hooks on the runner host:
-
-```bash
-cp hooks/pre-job.sh  /home/runner/hooks/pre-job.sh
-cp hooks/post-job.sh /home/runner/hooks/post-job.sh
-chmod +x /home/runner/hooks/*.sh
-```
-
-Add to the runner's systemd service unit:
-
-```ini
-[Service]
-Environment=ACTIONS_RUNNER_HOOK_JOB_STARTED=/home/runner/hooks/pre-job.sh
-Environment=ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/home/runner/hooks/post-job.sh
-```
-
 The runner user must be able to reach the configured runtime socket. For
 Docker Engine on Linux:
 

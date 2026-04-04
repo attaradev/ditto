@@ -47,13 +47,15 @@ func (e *Engine) ConnectionString(host string, port int) string {
 }
 
 // Dump runs pg_dump inside a short-lived helper container and writes a
-// custom-format compressed dump to destPath.
+// custom-format compressed dump to destPath. When opts.SchemaOnly is true,
+// --schema-only is passed so only DDL is captured (no row data).
 func (e *Engine) Dump(
 	ctx context.Context,
 	docker *client.Client,
 	clientImage string,
 	src engine.SourceConfig,
 	destPath string,
+	opts engine.DumpOptions,
 ) error {
 	if docker == nil {
 		return fmt.Errorf("postgres: docker runtime is required")
@@ -69,22 +71,27 @@ func (e *Engine) Dump(
 		clientImage = e.ContainerImage()
 	}
 
+	cmd := []string{
+		"--format=custom",
+		"--compress=9",
+		"--no-owner",
+		"--no-acl",
+		"--file=" + path.Join("/dump", filepath.Base(destPath)),
+		"--host=" + src.Host,
+		fmt.Sprintf("--port=%d", src.Port),
+		"--dbname=" + src.Database,
+		"--username=" + src.User,
+	}
+	if opts.SchemaOnly {
+		cmd = append(cmd, "--schema-only")
+	}
+
 	if err := dockerutil.RunContainer(ctx, docker,
 		&container.Config{
 			Image:      clientImage,
 			Entrypoint: []string{"pg_dump"},
-			Cmd: []string{
-				"--format=custom",
-				"--compress=9",
-				"--no-owner",
-				"--no-acl",
-				"--file=" + path.Join("/dump", filepath.Base(destPath)),
-				"--host=" + src.Host,
-				fmt.Sprintf("--port=%d", src.Port),
-				"--dbname=" + src.Database,
-				"--username=" + src.User,
-			},
-			Env: []string{"PGPASSWORD=" + password},
+			Cmd:        cmd,
+			Env:        []string{"PGPASSWORD=" + password},
 		},
 		&container.HostConfig{
 			Mounts: []mount.Mount{
@@ -126,11 +133,12 @@ func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath st
 // DumpFromContainer creates a compressed dump of the ditto database running
 // inside containerName and writes it to destPath on the host.
 // The container must have its dump directory mounted at /dump (read-write).
-func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string) error {
+// When opts.SchemaOnly is true, --schema-only is passed to pg_dump.
+func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, opts engine.DumpOptions) error {
 	if docker == nil {
 		return fmt.Errorf("postgres: docker runtime is required")
 	}
-	if err := dockerutil.Exec(ctx, docker, containerName, []string{
+	cmd := []string{
 		"pg_dump",
 		"--username=ditto",
 		"--dbname=ditto",
@@ -139,7 +147,11 @@ func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, c
 		"--no-owner",
 		"--no-acl",
 		"--file=/dump/" + filepath.Base(destPath),
-	}, nil); err != nil {
+	}
+	if opts.SchemaOnly {
+		cmd = append(cmd, "--schema-only")
+	}
+	if err := dockerutil.Exec(ctx, docker, containerName, cmd, nil); err != nil {
 		return fmt.Errorf("postgres: dump from container failed: %w", err)
 	}
 	return nil

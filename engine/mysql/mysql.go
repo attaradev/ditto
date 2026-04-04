@@ -51,13 +51,15 @@ func (e *Engine) ConnectionString(host string, port int) string {
 }
 
 // Dump runs mysqldump inside a short-lived helper container, then compresses
-// the resulting SQL dump to destPath.
+// the resulting SQL dump to destPath. When opts.SchemaOnly is true, --no-data
+// is passed so only DDL is captured.
 func (e *Engine) Dump(
 	ctx context.Context,
 	docker *client.Client,
 	clientImage string,
 	src engine.SourceConfig,
 	destPath string,
+	opts engine.DumpOptions,
 ) error {
 	if docker == nil {
 		return fmt.Errorf("mysql: docker runtime is required")
@@ -74,22 +76,27 @@ func (e *Engine) Dump(
 	}
 
 	sqlDumpPath := destPath + ".sql"
+	cmd := []string{
+		"--single-transaction",
+		"--routines",
+		"--triggers",
+		"--compress",
+		"--result-file=" + path.Join("/dump", filepath.Base(sqlDumpPath)),
+		"-h", src.Host,
+		"-P", fmt.Sprint(src.Port),
+		"-u", src.User,
+		src.Database,
+	}
+	if opts.SchemaOnly {
+		cmd = append(cmd, "--no-data")
+	}
+
 	if err := dockerutil.RunContainer(ctx, docker,
 		&container.Config{
 			Image:      clientImage,
 			Entrypoint: []string{"mysqldump"},
-			Cmd: []string{
-				"--single-transaction",
-				"--routines",
-				"--triggers",
-				"--compress",
-				"--result-file=" + path.Join("/dump", filepath.Base(sqlDumpPath)),
-				"-h", src.Host,
-				"-P", fmt.Sprint(src.Port),
-				"-u", src.User,
-				src.Database,
-			},
-			Env: []string{"MYSQL_PWD=" + password},
+			Cmd:        cmd,
+			Env:        []string{"MYSQL_PWD=" + password},
 		},
 		&container.HostConfig{
 			Mounts: []mount.Mount{
@@ -151,17 +158,22 @@ func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath st
 // DumpFromContainer creates a gzip-compressed mysqldump of the ditto database
 // running inside containerName and writes it to destPath on the host.
 // The container must have its dump directory mounted at /dump (read-write).
-func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string) error {
+// When opts.SchemaOnly is true, --no-data is passed to mysqldump.
+func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, opts engine.DumpOptions) error {
 	if docker == nil {
 		return fmt.Errorf("mysql: docker runtime is required")
 	}
 	sqlFile := filepath.Base(destPath) + ".sql"
-	if err := dockerutil.Exec(ctx, docker, containerName, []string{
+	cmd := []string{
 		"mysqldump", "-uditto", "-pditto",
 		"--single-transaction", "--routines", "--triggers",
 		"--result-file=/dump/" + sqlFile,
 		"ditto",
-	}, nil); err != nil {
+	}
+	if opts.SchemaOnly {
+		cmd = append(cmd, "--no-data")
+	}
+	if err := dockerutil.Exec(ctx, docker, containerName, cmd, nil); err != nil {
 		return fmt.Errorf("mysql: dump from container failed: %w", err)
 	}
 

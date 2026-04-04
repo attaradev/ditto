@@ -54,6 +54,14 @@ dump:
   #   client_image: "mysql:5.7"
   # client_image: ""
 
+  # Optional path for a schema-only (DDL) dump run alongside the full dump.
+  # Contains CREATE TABLE / CREATE INDEX / etc. but no row data. Useful for:
+  #   - Migration dry-runs: ditto copy run --dump /data/dump/schema.gz -- flyway migrate
+  #   - ERD generation:     ditto erd --source
+  #   - CI schema checks that don't need production data
+  # Leave empty (default) to skip the schema-only dump.
+  # schema_path: /data/dump/schema.gz
+
 # Auto-destroy copies older than this many seconds.
 # Individual copies can override this with --ttl on copy create.
 copy_ttl_seconds: 7200

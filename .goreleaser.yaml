@@ -37,7 +37,6 @@ archives:
       - README.md
       - LICENSE
       - ditto.yaml.example
-      - hooks/
 
 brews:
   - repository:
@@ -73,10 +72,6 @@ nfpms:
       - src: ./ditto.yaml.example
         dst: /etc/ditto/ditto.yaml.example
         type: config|noreplace
-      - src: ./hooks/pre-job.sh
-        dst: /usr/share/ditto/hooks/pre-job.sh
-      - src: ./hooks/post-job.sh
-        dst: /usr/share/ditto/hooks/post-job.sh
 
 changelog:
   sort: asc

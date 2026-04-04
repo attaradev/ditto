@@ -28,10 +28,10 @@ func (d *dumpMock) WaitReady(_ int, _ time.Duration) error        { return nil }
 func (d *dumpMock) Restore(_ context.Context, _ *client.Client, _ string, _ string) error {
 	return nil
 }
-func (d *dumpMock) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string) error {
+func (d *dumpMock) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string, _ engine.DumpOptions) error {
 	return nil
 }
-func (d *dumpMock) Dump(_ context.Context, _ *client.Client, _ string, _ engine.SourceConfig, dest string) error {
+func (d *dumpMock) Dump(_ context.Context, _ *client.Client, _ string, _ engine.SourceConfig, dest string, _ engine.DumpOptions) error {
 	if d.dumpErr != nil {
 		return d.dumpErr
 	}
@@ -103,5 +103,51 @@ func TestAtomicSwapFailedDumpPreservesOld(t *testing.T) {
 	}
 	if string(data) != "old good dump" {
 		t.Errorf("old dump corrupted: got %q", data)
+	}
+}
+
+func TestSchemaOnlyDump(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "latest.gz")
+	schemaPath := filepath.Join(dir, "schema.gz")
+
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cfg := &config.Config{
+		Source: config.Source{
+			Engine: "mock", Host: "localhost", Database: "db", User: "u", Password: "p",
+		},
+		Dump: config.Dump{
+			Path:       destPath,
+			SchemaPath: schemaPath,
+		},
+	}
+	sched := New(cfg, &dumpMock{content: []byte("fake dump data")}, store.NewEventStore(db), nil)
+
+	if err := sched.RunOnce(t.Context()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	// Full dump written.
+	if data, err := os.ReadFile(destPath); err != nil {
+		t.Fatalf("read full dump: %v", err)
+	} else if string(data) != "fake dump data" {
+		t.Errorf("full dump content: got %q, want %q", data, "fake dump data")
+	}
+
+	// Schema-only dump written.
+	if data, err := os.ReadFile(schemaPath); err != nil {
+		t.Fatalf("read schema dump: %v", err)
+	} else if string(data) != "fake dump data" {
+		t.Errorf("schema dump content: got %q, want %q", data, "fake dump data")
+	}
+
+	// No temp files left behind.
+	if _, err := os.Stat(schemaPath + ".tmp"); !os.IsNotExist(err) {
+		t.Error("schema .tmp file should not exist after successful run")
 	}
 }

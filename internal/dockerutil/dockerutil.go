@@ -11,6 +11,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	imagetypes "github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 )
@@ -120,6 +121,20 @@ func RunContainer(
 	hostCfg *container.HostConfig,
 	name string,
 ) error {
+	return RunContainerOnNetwork(ctx, cli, cfg, hostCfg, nil, name)
+}
+
+// RunContainerOnNetwork is like RunContainer but attaches the container to a
+// named Docker network via netCfg. Pass nil for netCfg to use the default
+// bridge network (equivalent to RunContainer).
+func RunContainerOnNetwork(
+	ctx context.Context,
+	cli *client.Client,
+	cfg *container.Config,
+	hostCfg *container.HostConfig,
+	netCfg *network.NetworkingConfig,
+	name string,
+) error {
 	if cfg == nil {
 		return fmt.Errorf("docker runtime: missing container config")
 	}
@@ -131,7 +146,7 @@ func RunContainer(
 		return err
 	}
 
-	resp, err := cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, name)
+	resp, err := cli.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, name)
 	if err != nil {
 		return fmt.Errorf("docker runtime: create helper container: %w", err)
 	}

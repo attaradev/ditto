@@ -107,7 +107,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		_ = os.Remove(tmpPath)
 	}
 
-	if err := s.eng.Dump(ctx, s.docker, s.cfg.Dump.ClientImage, src, dumpDest); err != nil {
+	if err := s.eng.Dump(ctx, s.docker, s.cfg.Dump.ClientImage, src, dumpDest, engine.DumpOptions{}); err != nil {
 		_ = os.Remove(dumpDest)
 		return fmt.Errorf("dump: engine dump: %w", err)
 	}
@@ -141,6 +141,48 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	slog.Info("dump: complete", "dest", destPath, "size_bytes", info.Size(), "obfuscated", hasRules)
 	_ = s.events.Append("dump", "latest", "completed", "scheduler",
 		map[string]any{"dest": destPath, "size_bytes": info.Size(), "obfuscated": hasRules})
+
+	// Schema-only dump (optional). No obfuscation bake — schema dumps contain
+	// no row data, so PII scrubbing is a no-op.
+	if s.cfg.Dump.SchemaPath != "" {
+		if err := s.dumpSchemaOnly(ctx, src); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// dumpSchemaOnly runs a DDL-only dump and atomically replaces cfg.Dump.SchemaPath.
+func (s *Scheduler) dumpSchemaOnly(ctx context.Context, src engine.SourceConfig) error {
+	schemaPath := s.cfg.Dump.SchemaPath
+	schemaTmp := schemaPath + ".tmp"
+
+	if err := os.MkdirAll(filepath.Dir(schemaPath), 0o750); err != nil {
+		return fmt.Errorf("dump: mkdir schema path: %w", err)
+	}
+	_ = os.Remove(schemaTmp)
+
+	slog.Info("dump: schema-only starting", "dest", schemaPath)
+	if err := s.eng.Dump(ctx, s.docker, s.cfg.Dump.ClientImage, src, schemaTmp, engine.DumpOptions{SchemaOnly: true}); err != nil {
+		_ = os.Remove(schemaTmp)
+		return fmt.Errorf("dump: schema-only dump: %w", err)
+	}
+
+	info, err := os.Stat(schemaTmp)
+	if err != nil || info.Size() == 0 {
+		_ = os.Remove(schemaTmp)
+		return fmt.Errorf("dump: schema-only file missing or empty after dump")
+	}
+
+	if err := os.Rename(schemaTmp, schemaPath); err != nil {
+		_ = os.Remove(schemaTmp)
+		return fmt.Errorf("dump: rename schema dump %s -> %s: %w", schemaTmp, schemaPath, err)
+	}
+
+	slog.Info("dump: schema-only complete", "dest", schemaPath, "size_bytes", info.Size())
+	_ = s.events.Append("dump", "latest", "schema-completed", "scheduler",
+		map[string]any{"dest": schemaPath, "size_bytes": info.Size()})
 	return nil
 }
 
@@ -180,7 +222,7 @@ func (s *Scheduler) bakeObfuscation(ctx context.Context, rawPath, outPath string
 		return fmt.Errorf("staging obfuscate: %w", err)
 	}
 
-	if err := s.eng.DumpFromContainer(ctx, s.docker, ctrName, outPath); err != nil {
+	if err := s.eng.DumpFromContainer(ctx, s.docker, ctrName, outPath, engine.DumpOptions{}); err != nil {
 		return fmt.Errorf("staging re-dump: %w", err)
 	}
 

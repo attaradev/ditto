@@ -55,7 +55,7 @@ internal/
 cmd/
   ditto/main.go      CLI entry point; blank engine imports
   *.go               cobra command implementations
-hooks/               GHA pre/post job shell scripts
+actions/             GitHub Actions composite actions (create, delete)
 ```
 
 ## Adding a new database engine

@@ -19,6 +19,12 @@ type SourceConfig struct {
 	PasswordSecret string // secret reference: env:VAR, file:/path, or arn:aws:...
 }
 
+// DumpOptions controls optional dump behaviour. The zero value produces a
+// full dump (schema + data), which is the default for all call sites.
+type DumpOptions struct {
+	SchemaOnly bool // when true, dump DDL only — no row data
+}
+
 // Engine is the interface that each database engine must implement.
 // All engine-specific behaviour (dump, restore, readiness, connection strings)
 // lives behind this interface; the copy manager never imports engine packages
@@ -27,10 +33,10 @@ type Engine interface {
 	// Name returns the identifier used in ditto.yaml (e.g. "postgres", "mysql").
 	Name() string
 
-	// Dump writes a compressed full dump of src to destPath through the
-	// configured Docker-compatible runtime. clientImage overrides the helper
-	// image used for the dump when non-empty.
-	Dump(ctx context.Context, docker *client.Client, clientImage string, src SourceConfig, destPath string) error
+	// Dump writes a compressed dump of src to destPath through the configured
+	// Docker-compatible runtime. clientImage overrides the helper image used for
+	// the dump when non-empty. opts controls whether the dump includes row data.
+	Dump(ctx context.Context, docker *client.Client, clientImage string, src SourceConfig, destPath string, opts DumpOptions) error
 
 	// Restore loads a dump file into a running container through the
 	// configured Docker-compatible runtime.
@@ -43,7 +49,8 @@ type Engine interface {
 	// containerName and writes it to destPath on the host. The container must
 	// have its dump directory mounted at /dump (as copy and staging containers do).
 	// Used by the dump scheduler to bake obfuscation into the dump file.
-	DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string) error
+	// opts controls whether the dump includes row data.
+	DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, opts DumpOptions) error
 
 	// ContainerEnv returns the environment variables needed to initialise the
 	// database inside a copy or staging container.
