@@ -2,43 +2,76 @@
 
 ## Scope
 
-This policy covers the ditto CLI and its supporting packages. It does not cover the configuration
-of your RDS source database, AWS IAM policies, or EC2 host hardening — those are your
-responsibility.
+This policy covers the ditto CLI, the HTTP service exposed by `ditto serve`, and the supporting Go
+and Python SDKs in this repository.
+
+It does not cover:
+
+- hardening your source database
+- network policy or IAM configuration around the host running ditto
+- OS-level security for the machine that owns the Docker runtime and dump files
 
 ## Reporting a vulnerability
 
-Please do not open a public GitHub issue for security vulnerabilities.
+Do not open a public GitHub issue for security vulnerabilities.
 
 Email **<security@attara.dev>** with:
 
-- A description of the vulnerability
-- Steps to reproduce
-- The version of ditto affected
+- a clear description of the issue
+- steps to reproduce it
+- the affected ditto version or commit
+- any logs, requests, or proof-of-concept details needed to verify it
 
-You will receive a response within 5 business days. If the issue is confirmed we will work on a
-fix and coordinate a disclosure timeline with you.
+You will receive a response within 5 business days. If the issue is confirmed, we will coordinate a
+fix and a disclosure timeline with you.
 
 ## Security model
 
-**Credentials** — RDS passwords are stored in AWS Secrets Manager and referenced by ARN in
-`ditto.yaml`. Passwords are never written to SQLite or logged. The in-memory cache has a
-5-minute TTL.
+### Secrets
 
-**Network isolation** — copy containers bind exclusively to `127.0.0.1`. They are not reachable
-from outside the EC2 host. No ports are opened to the internet.
+Source database passwords and server tokens can be resolved at runtime from:
 
-**Data access** — the dump user has `SELECT` privileges only. Copies are isolated from the
-source — no connection from a copy back to RDS is ever made.
+- `env:VAR`
+- `file:/path/to/secret`
+- `arn:aws:secretsmanager:...`
 
-**Copy data** — copies contain real production data and are local to the EC2 host. EBS volume
-encryption should be enabled. Copies are destroyed after TTL expiry. `DATABASE_URL` is masked in
-Actions logs via `::add-mask::`.
+Secrets are not persisted in ditto's SQLite metadata store. They are resolved only when needed and
+cached in memory for a short period.
 
-**Docker socket** — ditto requires access to the Docker socket (`/var/run/docker.sock`). This is
-equivalent to root on the host. Ensure the runner user's group membership is appropriately
-restricted.
+### Network exposure
+
+Copy containers bind to the local host only. They are intended to be reachable by processes on the
+same machine running ditto, not by arbitrary remote clients.
+
+If you expose `ditto serve`, protect it with a bearer token and network controls appropriate for the
+environment.
+
+### Data handling
+
+Copies are restored from a dump file. If that dump contains sensitive data, any copy created from it
+contains the same data until obfuscation is applied.
+
+The safest operating model is:
+
+1. configure obfuscation rules
+2. run `ditto reseed`
+3. distribute or restore only the obfuscated dump
+
+That keeps raw production data out of developer shells, CI jobs, and restored copies.
+
+### Host trust boundary
+
+Access to the Docker socket is effectively host-level privilege. Anyone who can control the runtime
+can control ditto copy containers and, by extension, the host operating them.
+
+Treat the machine running ditto as sensitive infrastructure:
+
+- restrict access to the Docker socket
+- encrypt local storage that contains dump files
+- limit shell access to trusted operators
+- rotate source credentials and server tokens when operator access changes
 
 ## Supported versions
 
-Only the latest release receives security fixes.
+Security fixes are applied to the latest released version. If you are running from an unreleased
+commit, upgrade to the latest release first when validating whether a vulnerability still applies.

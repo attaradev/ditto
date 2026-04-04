@@ -1,117 +1,187 @@
 # Contributing to ditto
 
+ditto is a CLI and service for provisioning isolated Postgres and MySQL copies from a scheduled
+source dump. Contributions are welcome across product, docs, tests, and engine support.
+
+## Good contributions
+
+Useful contributions include:
+
+- fixing bugs or reducing operational risk
+- improving the CLI, copy lifecycle, or error messages
+- tightening documentation, examples, and troubleshooting guidance
+- expanding test coverage around config, copy orchestration, or engine behavior
+- adding or improving database engine support
+
+If you are new to the project, start with documentation improvements, focused bug fixes, or tests
+around existing behavior before taking on schema, engine, or lifecycle changes.
+
 ## Development setup
 
-**Prerequisites:**
+Prerequisites:
 
 - Go 1.26+
-- Docker (required for integration tests; ditto runs pg_dump/mysqldump inside containers — no host tools needed)
+- Docker or another Docker-compatible runtime for integration tests
+
+Clone the repository and build the CLI:
 
 ```bash
 git clone https://github.com/attaradev/ditto
 cd ditto
 go mod download
-go build ./...
+go build ./cmd/ditto
 ```
 
-## Running tests
-
-Unit tests have no external dependencies and run everywhere:
+Smoke-test the built command surface:
 
 ```bash
-go test ./...
-go test -race ./...   # always run with the race detector before opening a PR
+go run ./cmd/ditto --help
+go run ./cmd/ditto copy run --help
+go run ./cmd/ditto erd --help
 ```
 
-Integration tests require Docker and are gated by a build tag:
+## Recommended workflow
+
+1. Branch from `main`.
+2. Use a focused branch name such as `feat/<topic>`, `fix/<topic>`, `docs/<topic>`, or `chore/<topic>`.
+3. Make the smallest change that solves the problem completely.
+4. Run the relevant checks locally.
+5. Open a focused pull request with clear validation evidence.
+
+## Commit messages
+
+Use Conventional Commits with concise subjects:
+
+- `feat: add mysql dump retry logging`
+- `fix: keep copy cleanup on interrupted runs`
+- `docs: reorganize docs into diataxis structure`
+
+Avoid generic subjects such as `update`, `misc`, or `changes`.
+
+## Local validation
+
+Run these before opening a pull request:
 
 ```bash
-go test -tags=integration -timeout=15m ./engine/...
+go build ./cmd/ditto
+go test -race ./...
+go test -tags=integration -race -count=1 -timeout=15m ./engine/...
 ```
 
-Individual packages:
+If your change affects docs, check links and fenced code blocks as part of the review. If you have
+`markdownlint-cli2` installed locally, run it before opening the PR.
 
-```bash
-go test ./internal/store/...   # SQLite store (schema, copies, events)
-go test ./engine/...           # engine registry
-go test ./internal/config/...  # config loading + env overrides
-go test ./internal/dump/...    # dump scheduler + atomic swap
-go test ./internal/copy/...    # port pool
-```
+## Pull request checklist
+
+Before you request review, confirm that:
+
+- the PR is one logical change
+- new behavior is covered by tests or a concrete validation note
+- docs were updated if flags, config, or workflows changed
+- errors include enough context for operators to act on them
+- database schema or engine interface changes were discussed first
+
+When you open the PR, explain:
+
+- what changed
+- why it was needed
+- risks or compatibility concerns
+- exactly how you validated it
+
+## Good first issues
+
+Look for issues labeled `good first issue` or `help wanted` if those labels are available. If the
+issue tracker is quiet, these are strong first contributions:
+
+- tighten README or troubleshooting guidance after trying the project locally
+- add focused unit tests around config loading, store behavior, or CLI helpers
+- improve command output and error text without changing core lifecycle behavior
+- add missing docs when a feature exists in code but is hard to discover
+
+If you plan to work on something non-trivial, open an issue or discussion first so the design can be
+aligned before you invest implementation time.
 
 ## Project layout
 
 | Path | Purpose |
 | --- | --- |
-| `cmd/` | CLI commands and the main entrypoint |
-| `engine/` | Engine interface and per-engine implementations (postgres, mysql) |
-| `internal/config/` | `ditto.yaml` parsing (Viper) |
+| `cmd/` | Cobra CLI commands and the main entrypoint |
+| `engine/` | Engine interface and per-engine implementations |
+| `internal/config/` | `ditto.yaml` loading, defaults, and validation |
 | `internal/copy/` | Copy lifecycle, port pool, warm pool, HTTP client |
-| `internal/dump/` | Dump scheduler with atomic file replacement |
-| `internal/dumpfetch/` | Dump URI resolution (local path, `s3://`, `https://`) |
-| `internal/erd/` | Schema introspection and ERD rendering (Mermaid, DBML) |
-| `internal/obfuscation/` | Post-restore PII scrubbing rules |
-| `internal/secret/` | Secret resolution (`env:`, `file:`, `arn:aws:...`) |
+| `internal/dump/` | Dump scheduler and atomic file replacement |
+| `internal/dumpfetch/` | Alternate dump sources such as local files, `s3://`, and `https://` |
+| `internal/erd/` | Schema introspection and ERD rendering |
+| `internal/obfuscation/` | PII scrubbing rules baked into dumps or applied post-restore |
+| `internal/secret/` | Secret resolution for `env:`, `file:`, and AWS Secrets Manager |
 | `internal/server/` | HTTP API server for remote copy operations |
-| `internal/store/` | SQLite metadata for copies and lifecycle events |
-| `pkg/ditto/` | Go SDK — `NewCopy(t)` for use in test suites |
-| `sdk/python/` | Python SDK — `Client` and pytest fixture |
-| `actions/` | GitHub Actions composite actions (create, delete) |
+| `internal/store/` | SQLite metadata for copy state and lifecycle events |
+| `pkg/ditto/` | Go SDK for tests and programmatic copy lifecycle |
+| `sdk/python/` | Python SDK and pytest fixture |
+| `actions/` | Composite GitHub Actions bundled in the repository |
+| `docs/` | Diataxis documentation set |
+
+## Documentation expectations
+
+Documentation is part of the product surface. When behavior changes, update the relevant docs in the
+same pull request.
+
+Keep docs changes to these standards:
+
+- every command must be executable
+- code fences must include a language tag
+- examples must match the real CLI surface
+- task guides belong under `docs/how-to/`
+- reference material belongs under `docs/reference/`
+- tutorials should teach one path from start to finish
 
 ## Adding a new database engine
 
 Each engine is a self-contained package that registers itself at startup:
 
-1. Create `engine/{name}/{name}.go`
-2. Implement all eight methods of `engine.Engine`
-3. Add `func init() { engine.Register(&Engine{}) }` at the bottom
-4. Add a blank import in `cmd/ditto/main.go`:
+1. Create `engine/{name}/{name}.go`.
+1. Implement all eight methods of `engine.Engine`.
+1. Add `func init() { engine.Register(&Engine{}) }`.
+1. Add a blank import in `cmd/ditto/main.go`:
 
-   ```go
-   _ "github.com/attaradev/ditto/engine/{name}"
-   ```
+```go
+_ "github.com/attaradev/ditto/engine/{name}"
+```
 
-5. Write tests in `engine/{name}/{name}_test.go`; tag integration tests with
-   `//go:build integration`
+1. Write tests in `engine/{name}/{name}_test.go` and tag integration tests with
+   `//go:build integration`.
 
-No changes to any other package are required — the engine registry handles dispatch.
+The `engine.Engine` interface is treated as stable. Do not add methods casually. Open an issue or
+design discussion first if you need to change it.
 
-The eight methods to implement:
+The eight required methods are:
 
 | Method | Notes |
 | --- | --- |
 | `Name() string` | Key used in `ditto.yaml` under `source.engine` |
-| `ContainerImage() string` | Pin the tag — never use `latest` |
-| `ContainerEnv() []string` | Env vars to initialise the database in a copy container |
-| `ConnectionString(host, port) string` | DSN for a copy; always uses user `ditto`, password `ditto`, db `ditto` |
-| `Dump(ctx, docker, clientImage, src, destPath, opts) error` | Write a compressed dump; pass `DumpOptions{SchemaOnly: true}` for DDL-only |
-| `DumpFromContainer(ctx, docker, containerName, destPath, opts) error` | Re-dump a running container (used for obfuscation baking) |
-| `Restore(ctx, docker, dumpPath, containerName) error` | Restore into a running container; dump dir bind-mounted at `/dump/` |
-| `WaitReady(port, timeout) error` | TCP dial then `SELECT 1`; poll every 500ms |
+| `ContainerImage() string` | Pin the image tag; never rely on `latest` |
+| `ContainerEnv() []string` | Environment needed to initialise a copy container |
+| `ConnectionString(host, port) string` | DSN for a copy using the fixed `ditto` credentials |
+| `Dump(...) error` | Produce a compressed dump from the configured source |
+| `DumpFromContainer(...) error` | Re-dump a running container, used when baking obfuscation |
+| `Restore(...) error` | Restore into a running copy container |
+| `WaitReady(port, timeout) error` | Block until the container accepts real connections |
 
 ## Code conventions
 
-- All exported functions and types have doc comments.
-- Errors wrap with context: `fmt.Errorf("copy.Create: %w", err)`.
-- The `engine.Engine` interface is stable — do not add methods without an ADR.
-- SQLite queries use `?` placeholders; no string interpolation in SQL.
-- The port pool lock is held for the full duration of allocation including the TCP dial check —
-  do not release it in between.
-- Context cancellation must propagate to all blocking operations (`exec.CommandContext`,
-  Docker API calls, `WaitReady` loops).
-
-## Opening a pull request
-
-- Keep PRs focused: one logical change per PR.
-- All unit tests must pass with `-race`.
-- Include a brief description of what changed and why.
-- For changes to the Engine interface or SQLite schema, open an issue first.
+- Add doc comments for exported functions and types.
+- Wrap errors with context, for example `fmt.Errorf("copy.Create: %w", err)`.
+- Keep SQL parameterized; do not build SQL with string interpolation.
+- Propagate context cancellation into blocking calls.
+- Keep lifecycle fixes small and explicit. Subtle cleanup regressions are expensive.
 
 ## Reporting issues
 
-Open an issue on GitHub with:
+Open a GitHub issue with:
 
-- ditto version (`ditto --version`)
-- OS and Docker version
-- Minimal steps to reproduce
-- Relevant output from `ditto status` and `ditto copy logs <id>`
+- the ditto version from `ditto --version`
+- OS and Docker runtime version
+- the smallest reproducible example you can provide
+- output from `ditto status` and `ditto copy logs <id>` when relevant
+
+For security issues, follow [SECURITY.md](SECURITY.md) instead of filing a public issue.

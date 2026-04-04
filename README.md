@@ -22,175 +22,132 @@
   </a>
 </p>
 
-## Real production data. Zero risk. For every run
+## Ephemeral database copies with real schema, real data shape, and no shared state
 
-ditto provisions isolated Postgres and MySQL copies from a scheduled production
-dump — with PII obfuscated once at source, so every copy carries real schema and
-real data shapes without exposing sensitive information. No shared state. No seed
-scripts. No fabricated fixtures.
+ditto provisions isolated Postgres and MySQL copies from a scheduled source dump. It is built for
+teams that want production-faithful database behavior in CI, migration dry-runs, and local
+development without sharing a mutable staging database.
 
-```sh
-ditto copy run -- go test ./...
-```
+- One clean copy per run, job, or developer
+- PII scrubbed once during `ditto reseed`, then baked into every restored copy
+- Works as a local CLI or as a shared HTTP service for remote runners
 
-> **Real data, safely.** Configure obfuscation rules once and ditto bakes PII
-> scrubbing into the dump file — every copy restored from it is already clean.
-> Developers get production-faithful data shapes without ever seeing raw PII.
+## Is ditto for you?
 
-## Use cases
+ditto is a good fit when:
 
-| Use case | What ditto does |
-| --- | --- |
-| **CI test isolation** | Each job gets a clean throwaway copy; no shared staging contention |
-| **Migration dry-runs** | Validate `migrate up` against real data before merge |
-| **Parallel test sharding** | Each shard worker calls `copy create`; the port pool handles allocation |
-| **Local dev sandbox** | Every developer gets their own isolated copy; no more "who broke staging?" |
-| **Compliance-safe dev** | Obfuscation rules bake PII scrubbing into the dump once — every copy is safe |
-| **Load and perf testing** | Mutations stay in the throwaway copy; staging is never polluted |
-| **Incident reproduction** | Restore a recent dump locally to reproduce and debug production bugs |
+- you already have a Postgres or MySQL source database that the Docker runtime can reach
+- your tests or migrations need real constraints, triggers, and data shape
+- shared staging state is making CI or local development unreliable
+- you want to keep real production data out of developer laptops and CI logs
 
-## The problem ditto solves
+ditto is not a good fit when:
 
-Databases become unreliable when runs share the same environment. **Shared mutation** means one run's
-writes pollute the next's reads. **Schema drift** means seed fixtures diverge from production shapes
-until tests pass on fabricated data and fail on real data. **Rollback fragility** means transaction
-cleanup breaks under background jobs and multiple connections — the exact conditions production runs
-under. **Fabricated data** hides the edge cases and constraint violations that only appear on real
-data, but real data can't go to developers because of PII.
+- you only need synthetic fixtures or an in-memory test database
+- you cannot expose a network-reachable source host to the machine running ditto
+- you want a hosted service instead of operating a local or shared ditto host
 
-ditto eliminates all four. Each run gets a copy restored from a production dump with PII scrubbed at
-source — real schema, real data shapes, no shared state, no PII exposure.
+## How it works
 
-When ditto is a good fit:
+1. `ditto reseed` writes a compressed dump from the configured source database.
+2. `ditto copy create` or `ditto copy run` restores that dump into an ephemeral database container.
+3. `ditto daemon` keeps the dump fresh and deletes expired copies.
 
-- You want each test run, migration, or dev session to start from a clean slate
-- Your tests need real database behavior — DDL, constraints, triggers — not mocked persistence
-- Shared staging contention or schema drift is already costing you reliability
-- You want sub-second database provisioning without standing up extra infrastructure
+See [Architecture](docs/explanation/architecture.md) for the full lifecycle and trade-offs.
+
+## Choose your mode
+
+| Mode | Use it when | Main commands |
+| --- | --- | --- |
+| Local host | The same machine can run Docker and owns the dump file | `reseed`, `copy create`, `copy run`, `daemon` |
+| Shared server | CI runners or developers should request copies from a central host | `serve`, `copy create --server=...`, `copy run --server=...` |
 
 ## Install
 
-**Homebrew** (macOS and Linux):
-
-```bash
-brew tap attaradev/ditto
-brew install ditto
-```
-
-**Debian / Ubuntu** — download the `.deb` from the [latest release](https://github.com/attaradev/ditto/releases/latest):
-
-```bash
-sudo dpkg -i ditto_<version>_linux_amd64.deb
-```
-
-**RPM** (Fedora / RHEL / Amazon Linux):
-
-```bash
-sudo rpm -i ditto_<version>_linux_amd64.rpm
-```
-
-**Alpine**:
-
-```bash
-apk add --allow-untrusted ditto_<version>_linux_amd64.apk
-```
-
-**Go install**:
+### Go install
 
 ```bash
 go install github.com/attaradev/ditto/cmd/ditto@latest
 ```
 
-**Build from source**:
+### Build from source
 
 ```bash
 git clone https://github.com/attaradev/ditto
 cd ditto
-go build -o /usr/local/bin/ditto ./cmd/ditto
+go build -o ./ditto ./cmd/ditto
 ```
 
-## Quick start
+The release workflow is configured to publish packaged binaries and OS packages. See
+[Releases](https://github.com/attaradev/ditto/releases).
 
-**Prerequisites:**
+## Quickstart
 
-- A Docker-compatible runtime on the same host as ditto
-- A source database hostname reachable from that runtime (`localhost` and `127.0.0.1` on the host
-  are not sufficient for dump helpers)
+Prerequisites:
 
-Create `ditto.yaml` in the current directory or `~/.ditto/ditto.yaml`:
+- a Docker-compatible runtime on the same host as ditto
+- a Postgres or MySQL source host reachable from that runtime
+- a read-only dump user on that source database
 
-```yaml
-source:
-  engine: postgres          # or mysql
-  host: db.example.com
-  port: 5432
-  database: myapp
-  user: ditto_dump
-  password: secret          # dev only — use password_secret in production
+If your source host is `localhost`, `127.0.0.1`, or `::1`, this quickstart will fail. Dump helpers
+run inside containers, so the source must be reachable from the Docker runtime by hostname or
+network address.
 
-dump:
-  schedule: "0 * * * *"
-  path: /data/dump/latest.gz
+After installation, the shortest working path is four commands:
 
-copy_ttl_seconds: 7200
-port_pool_start: 5433
-port_pool_end: 5600
-```
-
-Take a first dump, then run your tests against a fresh copy:
-
-```sh
+```bash
+export DITTO_SOURCE_URL='postgres://ditto_dump:secret@db.example.com:5432/myapp'
+export DITTO_DUMP_PATH="$PWD/.ditto/latest.gz"
 ditto reseed
+ditto copy run -- env | grep '^DATABASE_URL='
+```
+
+What you should see:
+
+- `ditto reseed` completes without replacing the previous dump on failure
+- `ditto copy run` prints a `DATABASE_URL=...` line, proving the copy was created and injected
+- the copy is destroyed automatically when the command exits
+
+Useful next commands:
+
+```bash
+ditto status
+ditto erd --output schema.mmd
 ditto copy run -- go test ./...
 ```
 
-ditto runs dump and restore work through the configured Docker runtime — no host-installed
-`pg_dump`, `pg_restore`, `mysqldump`, or Docker CLI required.
+For a repeatable file-based setup, move the environment variables into `ditto.yaml`. See
+[Run Your First Copy](docs/tutorials/run-your-first-copy.md) and
+[Configuration Reference](docs/reference/configuration.md).
 
-## How it works
+## Common workflows
 
-```mermaid
-flowchart TD
-    SRC[(Source DB)]
-    DUMP["/data/dump/latest.gz"]
-    CMD["ditto copy create"]
-    CTR["Database container\nport 5433"]
-    APP["your app / tests"]
-    DEL["ditto copy delete &lt;id&gt;"]
-    FREE["container destroyed\nport freed"]
-
-    SRC -->|"scheduled dump (+ obfuscate)"| DUMP
-    DUMP --> CMD
-    CMD -->|"restore"| CTR
-    CTR -->|"DATABASE_URL=...5433/ditto"| APP
-    APP --> DEL
-    DEL --> FREE
-```
-
-ditto runs on the same host that owns the Docker-compatible runtime and the local dump file. One
-SQLite database tracks copy state. The only long-running process is `ditto daemon`, which handles
-scheduled dumps and TTL-based cleanup. There is no separate control plane.
-
-## Security
-
-- Credentials are never persisted in SQLite. Resolve them at runtime via `env:`, `file:`, or
-  `arn:aws:` secret references.
-- Copy containers bind to `127.0.0.1`, keeping them local to the host.
-- Configure obfuscation rules so `ditto reseed` scrubs PII into the dump file before any copy is
-  created. Copies restored from a pre-obfuscated dump never expose production data to callers.
-- Access to the container runtime socket is effectively root-level on the host; restrict it accordingly.
-
-See [SECURITY.md](SECURITY.md) for the full security model and disclosure policy.
+| Task | Command |
+| --- | --- |
+| Run one command against a throwaway copy | `ditto copy run -- go test ./...` |
+| Start a shell session with a persistent copy | `eval "$(ditto env export)"` |
+| Generate an ERD from a copy | `ditto erd --output schema.mmd` |
+| Hold a copy across CI steps | `ditto copy create --format=json` and later `ditto copy delete <id>` |
+| Serve copies to remote runners | `ditto serve` |
 
 ## Documentation
 
-| Topic | |
+| Section | Start here |
 | --- | --- |
-| [Configuration](docs/configuration.md) | Full YAML reference, secret backends, obfuscation strategies, runtime overrides |
-| [CI integration](docs/ci.md) | GitHub Actions, server mode, Go SDK, Python SDK |
-| [Local development](docs/local-dev.md) | Daily workflow, shell integration, ERD generation, team sharing |
-| [Operations](docs/operations.md) | systemd, cron, runner setup, database user permissions |
-| [Contributing](CONTRIBUTING.md) | Dev setup, test commands, adding a new engine |
+| Tutorials | [Run your first copy](docs/tutorials/run-your-first-copy.md) |
+| How-to guides | [Local development](docs/how-to/use-ditto-for-local-development.md), [CI](docs/how-to/use-ditto-in-ci.md), [Operate a host](docs/how-to/operate-a-ditto-host.md), [Troubleshooting](docs/how-to/troubleshoot.md) |
+| Reference | [Configuration](docs/reference/configuration.md), [CLI](docs/reference/cli.md) |
+| Explanation | [Architecture](docs/explanation/architecture.md) |
+
+The docs landing page is at [docs/README.md](docs/README.md).
+
+## Trust and project health
+
+- CI, build, integration, and markdown checks run on every push and pull request
+- Security reports are handled privately; see [SECURITY.md](SECURITY.md)
+- Release history is tracked in [CHANGELOG.md](CHANGELOG.md)
+- Community expectations are in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- Contributor workflow is documented in [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## License
 
