@@ -8,3 +8,6 @@ MD013:
 
 # Allow raw HTML in the issue templates (front-matter style delimiters are fine).
 MD033: false
+
+# README starts with a centered <p> logo block rather than a bare # heading.
+MD041: false

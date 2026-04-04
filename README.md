@@ -1,8 +1,26 @@
-# ditto
+<p align="center">
+  <img src="assets/logo.svg" alt="ditto" width="320">
+</p>
 
-![ditto](assets/logo.svg)
+<h1 align="center">ditto</h1>
 
-[![CI](https://github.com/attaradev/ditto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/attaradev/ditto/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/attaradev/ditto/actions/workflows/ci.yml">
+    <img src="https://github.com/attaradev/ditto/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI">
+  </a>
+  <a href="https://github.com/attaradev/ditto/releases/latest">
+    <img src="https://img.shields.io/github/v/release/attaradev/ditto" alt="Release">
+  </a>
+  <a href="https://pkg.go.dev/github.com/attaradev/ditto">
+    <img src="https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white" alt="Go 1.26+">
+  </a>
+  <a href="https://goreportcard.com/report/github.com/attaradev/ditto">
+    <img src="https://goreportcard.com/badge/github.com/attaradev/ditto" alt="Go Report Card">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/github/license/attaradev/ditto" alt="License: MIT">
+  </a>
+</p>
 
 ## Real production data. Zero risk. For every run
 
