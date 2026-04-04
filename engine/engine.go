@@ -17,6 +17,10 @@ type SourceConfig struct {
 	User           string
 	Password       string // resolved from PasswordSecret at runtime
 	PasswordSecret string // secret reference: env:VAR, file:/path, or arn:aws:...
+	// NetworkName, when non-empty, attaches the dump helper container to this
+	// Docker network so it can reach the source by container hostname. Leave
+	// empty when the source is a real network-addressable host.
+	NetworkName string
 }
 
 // DumpOptions controls optional dump behaviour. The zero value produces a

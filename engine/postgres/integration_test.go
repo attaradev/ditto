@@ -53,11 +53,12 @@ func TestPostgresDumpRestoreCycle(t *testing.T) {
 	dumpDir := t.TempDir()
 	dumpPath := dumpDir + "/dump.pgc"
 	src := engine.SourceConfig{
-		Host:     srcName, // network alias — reachable from dump helper container
-		Port:     5432,
-		Database: "srcdb",
-		User:     "src",
-		Password: "src",
+		Host:        srcName, // container name used as DNS alias within netName
+		Port:        5432,
+		Database:    "srcdb",
+		User:        "src",
+		Password:    "src",
+		NetworkName: netName, // attach dump helper to same network so DNS resolves
 	}
 	if err := eng.Dump(ctx, cli, "", src, dumpPath, engine.DumpOptions{}); err != nil {
 		t.Fatalf("Dump: %v", err)
@@ -109,11 +110,12 @@ func TestPostgresSchemaOnlyDump(t *testing.T) {
 	dumpDir := t.TempDir()
 	dumpPath := dumpDir + "/schema.pgc"
 	src := engine.SourceConfig{
-		Host:     srcName,
-		Port:     5432,
-		Database: "srcdb",
-		User:     "src",
-		Password: "src",
+		Host:        srcName,
+		Port:        5432,
+		Database:    "srcdb",
+		User:        "src",
+		Password:    "src",
+		NetworkName: netName,
 	}
 	if err := eng.Dump(ctx, cli, "", src, dumpPath, engine.DumpOptions{SchemaOnly: true}); err != nil {
 		t.Fatalf("Dump schema-only: %v", err)

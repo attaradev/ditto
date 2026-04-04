@@ -17,6 +17,7 @@ import (
 	"github.com/attaradev/ditto/internal/secret"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx stdlib driver for database/sql
 )
@@ -86,7 +87,15 @@ func (e *Engine) Dump(
 		cmd = append(cmd, "--schema-only")
 	}
 
-	if err := dockerutil.RunContainer(ctx, docker,
+	var netCfg *network.NetworkingConfig
+	if src.NetworkName != "" {
+		netCfg = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				src.NetworkName: {},
+			},
+		}
+	}
+	if err := dockerutil.RunContainerOnNetwork(ctx, docker,
 		&container.Config{
 			Image:      clientImage,
 			Entrypoint: []string{"pg_dump"},
@@ -102,6 +111,7 @@ func (e *Engine) Dump(
 				},
 			},
 		},
+		netCfg,
 		"",
 	); err != nil {
 		return fmt.Errorf("postgres: dump helper failed: %w", err)

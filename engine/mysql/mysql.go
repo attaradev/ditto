@@ -20,6 +20,7 @@ import (
 	"github.com/attaradev/ditto/internal/secret"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -91,7 +92,15 @@ func (e *Engine) Dump(
 		cmd = append(cmd, "--no-data")
 	}
 
-	if err := dockerutil.RunContainer(ctx, docker,
+	var netCfg *network.NetworkingConfig
+	if src.NetworkName != "" {
+		netCfg = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				src.NetworkName: {},
+			},
+		}
+	}
+	if err := dockerutil.RunContainerOnNetwork(ctx, docker,
 		&container.Config{
 			Image:      clientImage,
 			Entrypoint: []string{"mysqldump"},
@@ -107,6 +116,7 @@ func (e *Engine) Dump(
 				},
 			},
 		},
+		netCfg,
 		"",
 	); err != nil {
 		_ = os.Remove(sqlDumpPath)
