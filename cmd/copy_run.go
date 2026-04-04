@@ -33,13 +33,13 @@ func copyClientFromContext(cmd *cobra.Command) copypkg.CopyClient {
 // dev tools. DITTO_RUN_ID always takes precedence.
 func detectRunID() string {
 	candidates := []string{
-		"DITTO_RUN_ID",        // explicit override (any environment)
-		"GITHUB_RUN_ID",       // GitHub Actions
-		"CI_PIPELINE_ID",      // GitLab CI
-		"CIRCLE_WORKFLOW_ID",  // CircleCI
-		"TRAVIS_BUILD_ID",     // Travis CI
-		"BUILDKITE_BUILD_ID",  // Buildkite
-		"BUILD_ID",            // Jenkins / generic
+		"DITTO_RUN_ID",       // explicit override (any environment)
+		"GITHUB_RUN_ID",      // GitHub Actions
+		"CI_PIPELINE_ID",     // GitLab CI
+		"CIRCLE_WORKFLOW_ID", // CircleCI
+		"TRAVIS_BUILD_ID",    // Travis CI
+		"BUILDKITE_BUILD_ID", // Buildkite
+		"BUILD_ID",           // Jenkins / generic
 	}
 	for _, k := range candidates {
 		if v := os.Getenv(k); v != "" {
@@ -53,13 +53,13 @@ func detectRunID() string {
 // job/step name env vars. DITTO_JOB_NAME always takes precedence.
 func detectJobName() string {
 	candidates := []string{
-		"DITTO_JOB_NAME",   // explicit override (any environment)
-		"GITHUB_JOB",       // GitHub Actions
-		"CI_JOB_NAME",      // GitLab CI
-		"CIRCLE_JOB",       // CircleCI
-		"TRAVIS_JOB_NAME",  // Travis CI
+		"DITTO_JOB_NAME",     // explicit override (any environment)
+		"GITHUB_JOB",         // GitHub Actions
+		"CI_JOB_NAME",        // GitLab CI
+		"CIRCLE_JOB",         // CircleCI
+		"TRAVIS_JOB_NAME",    // Travis CI
 		"BUILDKITE_STEP_KEY", // Buildkite
-		"JOB_NAME",         // Jenkins / generic
+		"JOB_NAME",           // Jenkins / generic
 	}
 	for _, k := range candidates {
 		if v := os.Getenv(k); v != "" {

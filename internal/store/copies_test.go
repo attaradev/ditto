@@ -27,7 +27,7 @@ func TestCopyCRUD(t *testing.T) {
 		Status:     StatusPending,
 		Port:       5433,
 		TTLSeconds: 3600,
-		RunID:   "run-123",
+		RunID:      "run-123",
 	}
 	if err := cs.Create(c); err != nil {
 		t.Fatalf("Create: %v", err)

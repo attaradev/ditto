@@ -84,7 +84,7 @@ func probeHost(ctx context.Context, host string) error {
 	if err != nil {
 		return err
 	}
-	defer cli.Close()
+	defer func() { _ = cli.Close() }()
 
 	pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -103,7 +103,7 @@ func EnsureImage(ctx context.Context, cli *client.Client, imageRef string) error
 	if err != nil {
 		return fmt.Errorf("pull image %s: %w", imageRef, err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	if _, err := io.Copy(io.Discard, rc); err != nil {
 		return fmt.Errorf("read pull stream for %s: %w", imageRef, err)
@@ -177,7 +177,7 @@ func readContainerLogs(ctx context.Context, cli *client.Client, containerID stri
 	if err != nil {
 		return "", err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	var buf bytes.Buffer
 	if _, err := stdcopy.StdCopy(&buf, &buf, rc); err != nil {

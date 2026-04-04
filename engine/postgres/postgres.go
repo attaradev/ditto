@@ -185,4 +185,3 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 
 // Ensure Engine satisfies the interface at compile time.
 var _ engine.Engine = (*Engine)(nil)
-

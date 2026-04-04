@@ -117,7 +117,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Destroy(r.Context(), id); err != nil {
-		slog.Error("server: destroy copy failed", "id", id, "err", err)
+		slog.Error("server: destroy copy failed", "id", id, "err", err) //nolint:gosec // id is a URL path segment, not user-controlled log injection
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

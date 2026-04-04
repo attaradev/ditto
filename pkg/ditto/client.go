@@ -78,10 +78,12 @@ func (c *Client) create(ctx context.Context) (*copyResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
-		var e struct{ Error string `json:"error"` }
+		var e struct {
+			Error string `json:"error"`
+		}
 		_ = json.NewDecoder(resp.Body).Decode(&e)
 		return nil, fmt.Errorf("ditto: create copy: %s (status %d)", e.Error, resp.StatusCode)
 	}
@@ -129,10 +131,12 @@ func (c *Client) destroy(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNoContent {
-		var e struct{ Error string `json:"error"` }
+		var e struct {
+			Error string `json:"error"`
+		}
 		_ = json.NewDecoder(resp.Body).Decode(&e)
 		return fmt.Errorf("ditto: destroy copy %s: %s (status %d)", id, e.Error, resp.StatusCode)
 	}

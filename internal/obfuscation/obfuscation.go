@@ -8,7 +8,7 @@
 //   - mask     — replace characters with '*' (configurable mask_char / keep_last)
 //   - hash     — one-way SHA-256 hex digest; preserves uniqueness for JOINs
 //   - replace  — deterministic format-preserving substitution; Rule.Type selects
-//                the data shape: email, name, phone, ip, url, uuid
+//     the data shape: email, name, phone, ip, url, uuid
 package obfuscation
 
 import (

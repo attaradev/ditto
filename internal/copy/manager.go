@@ -387,4 +387,3 @@ func checkDump(path string, staleThreshold int) error {
 	}
 	return nil
 }
-
