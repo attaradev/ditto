@@ -167,6 +167,7 @@ obfuscation:
       column: card_number
       strategy: mask
       keep_last: 4
+      mask_char: "*"
 ```
 
 Supported strategies:
@@ -175,7 +176,7 @@ Supported strategies:
 | --- | --- |
 | `replace` | Deterministic format-preserving substitution |
 | `hash` | One-way SHA-256 hex digest |
-| `mask` | Replace characters with a mask character |
+| `mask` | Replace characters with `mask_char` (default `*`); `keep_last` preserves a trailing suffix |
 | `redact` | Replace the value with `[redacted]` or `with:` |
 | `nullify` | Set the column to `NULL` |
 

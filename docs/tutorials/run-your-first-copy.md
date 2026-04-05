@@ -22,9 +22,19 @@ containers, so the source must be reachable from the container runtime.
 
 ## 1. Install ditto
 
+Choose whichever method fits your environment:
+
 ```bash
+# Homebrew (macOS and Linux)
+brew tap attaradev/ditto
+brew install --cask ditto
+
+# Go install (requires Go 1.26+)
 go install github.com/attaradev/ditto/cmd/ditto@latest
 ```
+
+Pre-built binaries and Linux packages (`.deb`, `.rpm`, `.apk`) are also available on
+[GitHub Releases](https://github.com/attaradev/ditto/releases).
 
 ## 2. Point ditto at your source database
 

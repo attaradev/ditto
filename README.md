@@ -64,7 +64,27 @@ See [Architecture](docs/explanation/architecture.md) for the full lifecycle and 
 
 ## Install
 
+### Homebrew (macOS and Linux)
+
+```bash
+brew tap attaradev/ditto
+brew install --cask ditto
+```
+
+### Pre-built binaries
+
+Download the archive for your platform from
+[GitHub Releases](https://github.com/attaradev/ditto/releases), extract it, and move the
+`ditto` binary onto your `PATH`.
+
+### Linux packages
+
+`.deb`, `.rpm`, and `.apk` packages are published on
+[GitHub Releases](https://github.com/attaradev/ditto/releases).
+
 ### Go install
+
+Requires Go 1.26+.
 
 ```bash
 go install github.com/attaradev/ditto/cmd/ditto@latest
@@ -77,9 +97,6 @@ git clone https://github.com/attaradev/ditto
 cd ditto
 go build -o ./ditto ./cmd/ditto
 ```
-
-The release workflow is configured to publish packaged binaries and OS packages. See
-[Releases](https://github.com/attaradev/ditto/releases).
 
 ### SDKs
 
