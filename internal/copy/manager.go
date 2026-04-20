@@ -13,11 +13,11 @@ import (
 	"github.com/attaradev/ditto/internal/dockerutil"
 	"github.com/attaradev/ditto/internal/obfuscation"
 	"github.com/attaradev/ditto/internal/store"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
-	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/go-connections/nat"
 	"github.com/oklog/ulid/v2"
 )
