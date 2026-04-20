@@ -67,10 +67,12 @@ func TestMySQLDumpRestoreCycle(t *testing.T) {
 	copyID := startMySQLContainer(t, ctx, cli, copyName, netName, copyPort, "ditto", "ditto", "ditto")
 	t.Cleanup(func() { stopRemove(cli, copyName, copyID) })
 
-	if err := eng.WaitReady(copyPort, 3*time.Minute); err != nil {
+	copyConn := engine.ConnectionConfig{Host: "localhost", Port: copyPort, Database: "ditto", User: "ditto", Password: "ditto"}
+	if err := eng.WaitReady(copyConn, 3*time.Minute); err != nil {
 		t.Fatalf("copy not ready: %v", err)
 	}
-	if err := eng.Restore(ctx, cli, dumpPath, copyName); err != nil {
+	copyBS := engine.CopyBootstrap{Database: "ditto", User: "ditto", Password: "ditto", RootPassword: "ditto-root"}
+	if err := eng.Restore(ctx, cli, dumpPath, copyName, copyBS); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
@@ -124,10 +126,12 @@ func TestMySQLSchemaOnlyDump(t *testing.T) {
 	copyID := startMySQLContainer(t, ctx, cli, copyName, netName, copyPort, "ditto", "ditto", "ditto")
 	t.Cleanup(func() { stopRemove(cli, copyName, copyID) })
 
-	if err := eng.WaitReady(copyPort, 3*time.Minute); err != nil {
+	copyConn := engine.ConnectionConfig{Host: "localhost", Port: copyPort, Database: "ditto", User: "ditto", Password: "ditto"}
+	if err := eng.WaitReady(copyConn, 3*time.Minute); err != nil {
 		t.Fatalf("copy not ready: %v", err)
 	}
-	if err := eng.Restore(ctx, cli, dumpPath, copyName); err != nil {
+	copyBS := engine.CopyBootstrap{Database: "ditto", User: "ditto", Password: "ditto", RootPassword: "ditto-root"}
+	if err := eng.Restore(ctx, cli, dumpPath, copyName, copyBS); err != nil {
 		t.Fatalf("Restore schema-only: %v", err)
 	}
 

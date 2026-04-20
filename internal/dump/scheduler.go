@@ -375,10 +375,10 @@ func (s *Scheduler) notifyFailure(dumpErr error) {
 	}
 
 	payload := map[string]any{
-		"error":            dumpErr.Error(),
-		"timestamp":        time.Now().UTC().Format(time.RFC3339),
-		"last_dump_age":    dumpAge,
-		"dump_path":        s.cfg.Dump.Path,
+		"error":         dumpErr.Error(),
+		"timestamp":     time.Now().UTC().Format(time.RFC3339),
+		"last_dump_age": dumpAge,
+		"dump_path":     s.cfg.Dump.Path,
 	}
 
 	if of.WebhookURL != "" {
@@ -402,7 +402,7 @@ func (s *Scheduler) notifyFailure(dumpErr error) {
 	}
 
 	// exec fallback
-	cmd := exec.Command("sh", "-c", of.Exec)
+	cmd := exec.Command("sh", "-c", of.Exec) //nolint:gosec // user-configured command from ditto.yaml
 	cmd.Env = append(os.Environ(),
 		"DITTO_DUMP_ERROR="+dumpErr.Error(),
 		"DITTO_DUMP_PATH="+s.cfg.Dump.Path,

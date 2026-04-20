@@ -116,7 +116,7 @@ func staticJWKSClient(t *testing.T, privateKey *rsa.PrivateKey) *http.Client {
 				"kid": "test-key",
 				"use": "sig",
 				"alg": "RS256",
-				"n":   base64.RawURLEncoding.EncodeToString(privateKey.PublicKey.N.Bytes()),
+				"n":   base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
 				"e":   base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}),
 			},
 		},

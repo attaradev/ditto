@@ -195,7 +195,7 @@ func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, c
 // elapses. It first waits for TCP connectivity, then confirms with SELECT 1.
 func (e *Engine) WaitReady(conn engine.ConnectionConfig, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	addr := fmt.Sprintf("%s:%d", conn.Host, conn.Port)
+	addr := net.JoinHostPort(conn.Host, fmt.Sprintf("%d", conn.Port))
 
 	for time.Now().Before(deadline) {
 		tcpConn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)

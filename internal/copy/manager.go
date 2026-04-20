@@ -17,7 +17,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
-	"github.com/docker/docker/errdefs"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/go-connections/nat"
 	"github.com/oklog/ulid/v2"
 )
@@ -162,10 +162,10 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 	stopErr := m.docker.ContainerStop(ctx, containerName(id), container.StopOptions{Timeout: new(10)})
 	rmErr := m.docker.ContainerRemove(ctx, containerName(id), container.RemoveOptions{Force: true})
 
-	if stopErr != nil && !errdefs.IsNotFound(stopErr) {
+	if stopErr != nil && !cerrdefs.IsNotFound(stopErr) {
 		slog.Warn("copy: container stop failed", "id", id, "err", stopErr)
 	}
-	if rmErr != nil && !errdefs.IsNotFound(rmErr) {
+	if rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
 		slog.Warn("copy: container remove failed", "id", id, "err", rmErr)
 		_ = m.copies.UpdateStatus(id, store.StatusFailed, store.WithErrorMessage(rmErr.Error()))
 		return fmt.Errorf("copy.Destroy remove %s: %w", id, rmErr)

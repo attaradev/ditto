@@ -152,7 +152,7 @@ func (s *CopyStore) List(filter ListFilter) ([]*Copy, error) {
 		args = append(args, filter.OwnerSubject)
 	}
 	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
+		query += " WHERE " + strings.Join(conditions, " AND ") //nolint:gosec // conditions are hardcoded strings, not user input
 	}
 	query += " ORDER BY created_at DESC"
 

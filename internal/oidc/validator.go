@@ -293,7 +293,7 @@ func parseJWK(key jsonWebKey) (crypto.PublicKey, error) {
 			X:     new(big.Int).SetBytes(xBytes),
 			Y:     new(big.Int).SetBytes(yBytes),
 		}
-		if !curve.IsOnCurve(pub.X, pub.Y) {
+		if !curve.IsOnCurve(pub.X, pub.Y) { //nolint:staticcheck // crypto/ecdh migration requires restructuring EC key parsing
 			return nil, fmt.Errorf("ec key is not on curve")
 		}
 		return pub, nil

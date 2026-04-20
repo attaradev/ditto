@@ -17,6 +17,10 @@ linters:
       # Test files are exempt from errcheck (test helpers often ignore cleanup errors).
       - path: "_test\\.go"
         linters: [errcheck]
+      # G101: test fixtures use obvious fake credentials, not real secrets.
+      - path: "_test\\.go"
+        linters: [gosec]
+        text: "G101"
 
 formatters:
   enable:
