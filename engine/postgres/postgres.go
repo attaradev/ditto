@@ -35,16 +35,40 @@ func (e *Engine) Name() string { return "postgres" }
 
 func (e *Engine) ContainerImage() string { return "postgres:16-alpine" }
 
-func (e *Engine) ContainerEnv() []string {
-	return []string{
-		"POSTGRES_USER=ditto",
-		"POSTGRES_PASSWORD=ditto",
-		"POSTGRES_DB=ditto",
+func (e *Engine) ContainerPort() int { return 5432 }
+
+func (e *Engine) ContainerSpec(copy engine.CopyBootstrap) engine.ContainerSpec {
+	spec := engine.ContainerSpec{
+		Env: []string{
+			"POSTGRES_USER=" + copy.User,
+			"POSTGRES_PASSWORD=" + copy.Password,
+			"POSTGRES_DB=" + copy.Database,
+		},
 	}
+	if copy.TLSEnabled {
+		spec.Cmd = []string{
+			"-c", "ssl=on",
+			"-c", "ssl_cert_file=/run/ditto/tls/server.crt",
+			"-c", "ssl_key_file=/run/ditto/tls/server.key",
+		}
+	}
+	return spec
 }
 
-func (e *Engine) ConnectionString(host string, port int) string {
-	return fmt.Sprintf("postgres://ditto:ditto@%s:%d/ditto?sslmode=disable", host, port)
+func (e *Engine) ConnectionString(conn engine.ConnectionConfig) string {
+	sslMode := "disable"
+	if conn.TLSEnabled {
+		sslMode = "verify-full"
+	}
+	return fmt.Sprintf(
+		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		conn.User,
+		conn.Password,
+		conn.Host,
+		conn.Port,
+		conn.Database,
+		sslMode,
+	)
 }
 
 // Dump runs pg_dump inside a short-lived helper container and writes a
@@ -123,14 +147,14 @@ func (e *Engine) Dump(
 // containerName is the Docker container name (e.g. "ditto-<id>") as set by the
 // copy manager. The manager calls WaitReady before Restore, so readiness is
 // already guaranteed when this method is invoked.
-func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath string, containerName string) error {
+func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath string, containerName string, copy engine.CopyBootstrap) error {
 	if docker == nil {
 		return fmt.Errorf("postgres: docker runtime is required")
 	}
 	if err := dockerutil.Exec(ctx, docker, containerName, []string{
 		"pg_restore",
-		"--username=ditto",
-		"--dbname=ditto",
+		"--username=" + copy.User,
+		"--dbname=" + copy.Database,
 		"--no-owner",
 		"--no-acl",
 		"/dump/" + filepath.Base(dumpPath),
@@ -144,14 +168,14 @@ func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath st
 // inside containerName and writes it to destPath on the host.
 // The container must have its dump directory mounted at /dump (read-write).
 // When opts.SchemaOnly is true, --schema-only is passed to pg_dump.
-func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, opts engine.DumpOptions) error {
+func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, copy engine.CopyBootstrap, opts engine.DumpOptions) error {
 	if docker == nil {
 		return fmt.Errorf("postgres: docker runtime is required")
 	}
 	cmd := []string{
 		"pg_dump",
-		"--username=ditto",
-		"--dbname=ditto",
+		"--username=" + copy.User,
+		"--dbname=" + copy.Database,
 		"--format=custom",
 		"--compress=9",
 		"--no-owner",
@@ -169,24 +193,24 @@ func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, c
 
 // WaitReady polls port until Postgres is accepting connections or timeout
 // elapses. It first waits for TCP connectivity, then confirms with SELECT 1.
-func (e *Engine) WaitReady(port int, timeout time.Duration) error {
+func (e *Engine) WaitReady(conn engine.ConnectionConfig, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	addr := fmt.Sprintf("localhost:%d", port)
+	addr := fmt.Sprintf("%s:%d", conn.Host, conn.Port)
 
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		tcpConn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err == nil {
-			_ = conn.Close()
+			_ = tcpConn.Close()
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	if time.Now().After(deadline) {
-		return fmt.Errorf("postgres: timed out waiting for TCP on port %d", port)
+		return fmt.Errorf("postgres: timed out waiting for TCP on port %d", conn.Port)
 	}
 
 	// Open one connection pool and reuse it across iterations.
-	dsn := fmt.Sprintf("postgres://ditto:ditto@localhost:%d/ditto?sslmode=disable", port)
+	dsn := e.ConnectionString(conn)
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return fmt.Errorf("postgres: open readiness probe DB: %w", err)
@@ -202,7 +226,7 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("postgres: timed out waiting for SELECT 1 on port %d", port)
+	return fmt.Errorf("postgres: timed out waiting for SELECT 1 on port %d", conn.Port)
 }
 
 // Ensure Engine satisfies the interface at compile time.

@@ -1,6 +1,6 @@
 # ditto Python SDK
 
-Python client for provisioning ephemeral database copies from a running ditto server.
+Python client for provisioning ephemeral database copies from a running ditto host.
 
 ## Install
 
@@ -17,11 +17,13 @@ pip install -e "./sdk/python[pytest]"
 ## Usage
 
 ```python
+import os
+
 from ditto import Client
 
 client = Client(
     server_url="http://ditto.internal:8080",
-    token="secret",
+    token=os.environ["DITTO_TOKEN"],
     ttl_seconds=600,
 )
 
@@ -46,5 +48,5 @@ with client.with_copy() as dsn:
 `Client` reads these variables by default:
 
 - `DITTO_SERVER_URL`
-- `DITTO_TOKEN`
+- `DITTO_TOKEN` (typically a bearer JWT in shared-host mode)
 - `DITTO_TTL`

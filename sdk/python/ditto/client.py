@@ -9,17 +9,17 @@ from typing import Generator
 
 
 class DittoError(Exception):
-    """Raised when the ditto server returns an error or is unreachable."""
+    """Raised when the ditto host returns an error or is unreachable."""
 
 
 class Client:
-    """Provisions ephemeral database copies from a running ditto server.
+    """Provisions ephemeral database copies from a running ditto host.
 
     Configuration can be supplied via constructor arguments or environment
     variables. Environment variables take precedence when both are present:
 
-        DITTO_SERVER_URL  — base URL of the ditto server (required)
-        DITTO_TOKEN       — Bearer auth token
+        DITTO_SERVER_URL  — base URL of the ditto host (required)
+        DITTO_TOKEN       — Bearer token (typically an OIDC JWT)
         DITTO_TTL         — default copy lifetime in seconds (integer string)
 
     Examples::
@@ -28,7 +28,7 @@ class Client:
 
         client = Client(
             server_url="http://ditto.internal:8080",
-            token="secret",
+            token=os.environ["DITTO_TOKEN"],
             ttl_seconds=3600,
         )
     """
@@ -58,6 +58,8 @@ class Client:
         ttl_seconds: int = 0,
         run_id: str = "",
         job_name: str = "",
+        dump_uri: str = "",
+        obfuscate: bool = False,
     ) -> dict:
         """Create a new ephemeral database copy.
 
@@ -68,6 +70,8 @@ class Client:
             ttl_seconds: Override the default copy lifetime in seconds.
             run_id: Optional run/session identifier for auditing.
             job_name: Optional job/step identifier for auditing.
+            dump_uri: Optional dump URI or host-local dump path resolved by the server.
+            obfuscate: Request post-restore obfuscation on the created copy.
 
         Raises:
             DittoError: If the server returns an error.
@@ -80,8 +84,12 @@ class Client:
             body["run_id"] = run_id
         if job_name:
             body["job_name"] = job_name
-        result = self._request("POST", "/v1/copies", body)
-        assert result is not None  # POST /v1/copies always returns a body
+        if dump_uri:
+            body["dump_uri"] = dump_uri
+        if obfuscate:
+            body["obfuscate"] = True
+        result = self._request("POST", "/v2/copies", body)
+        assert result is not None  # POST /v2/copies always returns a body
         return result
 
     def destroy(self, copy_id: str) -> None:
@@ -93,7 +101,7 @@ class Client:
         Raises:
             DittoError: If the server returns an error.
         """
-        self._request("DELETE", f"/v1/copies/{copy_id}")
+        self._request("DELETE", f"/v2/copies/{copy_id}")
 
     def list(self) -> list[dict]:
         """Return all copies known to the server.
@@ -101,8 +109,18 @@ class Client:
         Raises:
             DittoError: If the server returns an error.
         """
-        result = self._request("GET", "/v1/copies")
+        result = self._request("GET", "/v2/copies")
         return result if result is not None else []
+
+    def events(self, copy_id: str) -> list[dict]:
+        """Return lifecycle events for a copy by ID."""
+        result = self._request("GET", f"/v2/copies/{copy_id}/events")
+        return result if result is not None else []
+
+    def status(self) -> dict:
+        """Return shared-host status. Requires an admin-capable bearer token."""
+        result = self._request("GET", "/v2/status")
+        return result if isinstance(result, dict) else {}
 
     @contextmanager
     def with_copy(

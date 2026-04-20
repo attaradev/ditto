@@ -1,5 +1,13 @@
 import { DittoError } from "./errors.js";
-import type { ClientOptions, Copy, CreateCopyOptions, RequestOptions, StatusResponse } from "./types.js";
+import type {
+  ClientOptions,
+  CopyEvent,
+  CopySummary,
+  CreateCopyOptions,
+  CreateCopyResponse,
+  RequestOptions,
+  StatusResponse,
+} from "./types.js";
 
 interface ErrorBody {
   error?: unknown;
@@ -39,7 +47,7 @@ export class DittoClient {
     this.ttlSeconds = ttlSeconds;
   }
 
-  async create(options: CreateCopyOptions = {}): Promise<Copy> {
+  async create(options: CreateCopyOptions = {}): Promise<CreateCopyResponse> {
     const ttlSeconds = options.ttlSeconds ?? this.ttlSeconds;
     const body: Record<string, unknown> = {};
     if (ttlSeconds > 0) {
@@ -51,8 +59,14 @@ export class DittoClient {
     if (options.jobName) {
       body.job_name = options.jobName;
     }
+    if (options.dumpUri) {
+      body.dump_uri = options.dumpUri;
+    }
+    if (options.obfuscate) {
+      body.obfuscate = true;
+    }
 
-    return this.request<Copy>("/v1/copies", {
+    return this.request<CreateCopyResponse>("/v2/copies", {
       method: "POST",
       body: JSON.stringify(body),
       ...(options.signal ? { signal: options.signal } : {}),
@@ -64,28 +78,39 @@ export class DittoClient {
       throw new DittoError("copyId is required");
     }
 
-    await this.request("/v1/copies/" + encodeURIComponent(copyId), {
+    await this.request("/v2/copies/" + encodeURIComponent(copyId), {
       method: "DELETE",
       ...(options.signal ? { signal: options.signal } : {}),
     }, [204]);
   }
 
-  async list(options: RequestOptions = {}): Promise<Copy[]> {
-    return this.request<Copy[]>("/v1/copies", {
+  async list(options: RequestOptions = {}): Promise<CopySummary[]> {
+    return this.request<CopySummary[]>("/v2/copies", {
+      method: "GET",
+      ...(options.signal ? { signal: options.signal } : {}),
+    }, [200]);
+  }
+
+  async events(copyId: string, options: RequestOptions = {}): Promise<CopyEvent[]> {
+    if (!copyId) {
+      throw new DittoError("copyId is required");
+    }
+
+    return this.request<CopyEvent[]>("/v2/copies/" + encodeURIComponent(copyId) + "/events", {
       method: "GET",
       ...(options.signal ? { signal: options.signal } : {}),
     }, [200]);
   }
 
   async status(options: RequestOptions = {}): Promise<StatusResponse> {
-    return this.request<StatusResponse>("/v1/status", {
+    return this.request<StatusResponse>("/v2/status", {
       method: "GET",
       ...(options.signal ? { signal: options.signal } : {}),
     }, [200]);
   }
 
   async withCopy<T>(
-    fn: (dsn: string, copy: Copy) => Promise<T> | T,
+    fn: (dsn: string, copy: CreateCopyResponse) => Promise<T> | T,
     options: CreateCopyOptions = {},
   ): Promise<T> {
     const copy = await this.create(options);

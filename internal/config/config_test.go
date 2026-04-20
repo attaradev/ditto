@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -245,6 +246,41 @@ source:
 	}
 }
 
+func TestConfigServerEnabledRequiresSharedHostFields(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ditto.yaml")
+	content := `
+source:
+  engine: postgres
+  host: source.example.com
+  database: app
+  user: ditto
+  password: secret
+server:
+  enabled: true
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("Load: expected validation error for missing shared-host fields")
+	}
+	if got := err.Error(); got == "" || !containsAll(got,
+		"server.advertise_host",
+		"server.db_bind_host",
+		"server.copy_secret_secret",
+		"server.auth.issuer",
+		"server.auth.audience",
+		"server.auth.jwks_url",
+		"server.db_tls.cert_file",
+		"server.db_tls.key_file",
+	) {
+		t.Fatalf("Load error missing expected fields: %v", err)
+	}
+}
+
 func testSourceURL(scheme, user, password, host string, port int, database string) string {
 	u := &url.URL{
 		Scheme: scheme,
@@ -256,4 +292,13 @@ func testSourceURL(scheme, user, password, host string, port int, database strin
 		u.Host = u.Host + ":" + fmt.Sprint(port)
 	}
 	return u.String()
+}
+
+func containsAll(haystack string, needles ...string) bool {
+	for _, needle := range needles {
+		if !strings.Contains(haystack, needle) {
+			return false
+		}
+	}
+	return true
 }

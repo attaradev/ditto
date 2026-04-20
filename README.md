@@ -24,13 +24,14 @@
 
 ## Ephemeral database copies with real schema, real data shape, and no shared state
 
-ditto provisions isolated Postgres and MySQL copies from a scheduled source dump. It is built for
-teams that want production-faithful database behavior in CI, migration dry-runs, and local
-development without sharing a mutable staging database.
+ditto refreshes a cached Postgres or MySQL dump with `ditto reseed`, then restores disposable
+database copies from that dump. It is built for teams that want production-faithful database
+behavior in CI, migration dry-runs, and local development without sharing a mutable staging
+database.
 
 - One clean copy per run, job, or developer
-- PII scrubbed once during `ditto reseed`, then baked into every restored copy
-- Works as a local CLI or as a shared HTTP service for remote runners
+- Optional PII scrubbing baked into the dump during `ditto reseed`
+- Works as a local CLI or as a shared host via `ditto host`
 
 ## Is ditto for you?
 
@@ -51,7 +52,7 @@ ditto is not a good fit when:
 
 1. `ditto reseed` writes a compressed dump from the configured source database.
 2. `ditto copy create` or `ditto copy run` restores that dump into an ephemeral database container.
-3. `ditto daemon` keeps the dump fresh and deletes expired copies.
+3. `ditto host` keeps the dump fresh, refills warm copies, expires old copies, and serves the shared-host API.
 
 See [Architecture](docs/explanation/architecture.md) for the full lifecycle and trade-offs.
 
@@ -59,8 +60,8 @@ See [Architecture](docs/explanation/architecture.md) for the full lifecycle and 
 
 | Mode | Use it when | Main commands |
 | --- | --- | --- |
-| Local host | The same machine can run Docker and owns the dump file | `reseed`, `copy create`, `copy run`, `daemon` |
-| Shared server | CI runners or developers should request copies from a central host | `serve`, `copy create --server=...`, `copy run --server=...` |
+| Local host | The same machine can run Docker and owns the dump file | `reseed`, `copy create`, `copy run` |
+| Shared host | CI runners or developers should request copies from a central host | `host`, `copy create --server=...`, `copy run --server=...` |
 
 ## Install
 
@@ -153,7 +154,7 @@ For a repeatable file-based setup, move the environment variables into `ditto.ya
 | Start a shell session with a persistent copy | `eval "$(ditto env export)"` |
 | Generate an ERD from a copy | `ditto erd --output schema.mmd` |
 | Hold a copy across CI steps | `ditto copy create --format=json` and later `ditto copy delete <id>` |
-| Serve copies to remote runners | `ditto serve` |
+| Run a shared host for remote runners | `ditto host` |
 
 ## Documentation
 

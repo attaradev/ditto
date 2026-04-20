@@ -2,7 +2,7 @@
 
 ## Scope
 
-This policy covers the ditto CLI, the HTTP service exposed by `ditto serve`, and the supporting Go
+This policy covers the ditto CLI, the HTTP service exposed by `ditto host`, and the supporting Go
 and Python SDKs in this repository.
 
 It does not cover:
@@ -29,7 +29,7 @@ fix and a disclosure timeline with you.
 
 ### Secrets
 
-Source database passwords and server tokens can be resolved at runtime from:
+Source database passwords and the shared-host copy-credential seed can be resolved at runtime from:
 
 - `env:VAR`
 - `file:/path/to/secret`
@@ -40,11 +40,11 @@ cached in memory for a short period.
 
 ### Network exposure
 
-Copy containers bind to the local host only. They are intended to be reachable by processes on the
-same machine running ditto, not by arbitrary remote clients.
+In local mode, copy containers bind to loopback on the ditto machine. In shared-host mode, copy
+ports bind to `server.db_bind_host` and remote DSNs use `server.advertise_host`.
 
-If you expose `ditto serve`, protect it with a bearer token and network controls appropriate for the
-environment.
+If you expose `ditto host`, require short-lived bearer tokens from your identity provider, publish
+copy ports only on networks you trust, and keep TLS enabled for remote database access.
 
 ### Data handling
 
@@ -69,7 +69,7 @@ Treat the machine running ditto as sensitive infrastructure:
 - restrict access to the Docker socket
 - encrypt local storage that contains dump files
 - limit shell access to trusted operators
-- rotate source credentials and server tokens when operator access changes
+- rotate source credentials and the shared-host copy secret when operator access changes
 
 ## Supported versions
 

@@ -58,7 +58,7 @@ Obfuscation is safest when it happens before the dump is reused:
 That reduces the chance that raw production data escapes into a developer shell, CI job, or copied
 database.
 
-## Local mode vs server mode
+## Local mode vs shared-host mode
 
 ### Local mode
 
@@ -71,9 +71,10 @@ In local mode, the same host owns:
 
 This is the simplest mode for self-hosted CI or single-machine setups.
 
-### Server mode
+### Shared-host mode
 
-In server mode, one host runs `ditto serve` and remote clients call the HTTP API through `--server`.
+In shared-host mode, one machine runs `ditto host` and remote clients call the authenticated `/v2`
+API through `--server`.
 
 This is useful when:
 
@@ -87,7 +88,7 @@ ditto is intentionally opinionated. These constraints matter:
 
 - the source database must be reachable from the Docker runtime, not just from the host shell
 - loopback source hosts such as `localhost` are rejected
-- copy containers bind to the local host of the ditto machine
+- in shared-host mode, copy ports are published on `server.db_bind_host` and DSNs use `server.advertise_host`
 - access to the Docker socket is effectively host-level privilege
 - dump freshness is a trade-off between realism and operational cost
 

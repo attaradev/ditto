@@ -66,7 +66,7 @@ Cause:
 Fix:
 
 - run `ditto reseed` immediately
-- make sure `ditto daemon` or your cron job is actually running
+- make sure `ditto host` or your cron job is actually running
 - revisit `dump.schedule` and `dump.stale_threshold`
 
 The current implementation warns when the dump age grows beyond roughly twice `dump.stale_threshold`.
@@ -90,17 +90,17 @@ Fix:
 
 Cause:
 
-- `DITTO_TOKEN` is missing or does not match the server's configured token
+- `DITTO_TOKEN` is missing, expired, or does not satisfy the host's OIDC validation rules
 
 Fix:
 
 ```bash
-export DITTO_TOKEN=my-secret-token
+export DITTO_TOKEN="$(cat oidc.jwt)"
 ditto copy create --server=http://ditto.internal:8080
 ```
 
-Also verify that the server was started with `server.token` or `server.token_secret` configured as
-expected.
+Also verify that the host was started with the expected `server.auth.*` settings and that your JWT
+issuer, audience, and admin claim configuration line up.
 
 ## `ditto erd --source` fails but `ditto erd` works
 

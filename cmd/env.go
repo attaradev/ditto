@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	copypkg "github.com/attaradev/ditto/internal/copy"
 	"github.com/spf13/cobra"
@@ -30,7 +29,7 @@ Shell session workflow:
 	}
 
 	cmd.PersistentFlags().StringVar(&serverURL, "server", "",
-		"Remote ditto server URL (e.g. http://ditto.internal:8080)")
+		"Shared ditto host URL (e.g. http://ditto.internal:8080)")
 
 	// Propagate --server into context so copyClientFromContext picks it up.
 	cmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
@@ -123,11 +122,11 @@ func runEnvExport(cmd *cobra.Command, ttl, label string) error {
 		JobName: detectJobName(),
 	}
 	if ttl != "" {
-		d, err := time.ParseDuration(ttl)
+		ttlSeconds, err := parseTTL(ttl)
 		if err != nil {
-			return fmt.Errorf("invalid --ttl %q: %w", ttl, err)
+			return err
 		}
-		opts.TTLSeconds = int(d.Seconds())
+		opts.TTLSeconds = ttlSeconds
 	}
 
 	c, err := client.Create(cmd.Context(), opts)

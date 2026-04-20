@@ -17,6 +17,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/go-connections/nat"
 	"github.com/oklog/ulid/v2"
 )
@@ -36,6 +37,7 @@ type Manager struct {
 	ports    *PortPool
 	docker   *client.Client
 	refiller *WarmPoolRefiller
+	runtime  RemoteRuntimeConfig
 }
 
 // NewManager creates a Manager from an already-resolved Docker-compatible
@@ -58,8 +60,30 @@ func NewManager(
 		events: events,
 		ports:  ports,
 		docker: docker,
+		runtime: RemoteRuntimeConfig{
+			Mode: AccessModeLocal,
+		},
 	}
 	m.refiller = NewWarmPoolRefiller(m, cfg.WarmPoolSize)
+	return m, nil
+}
+
+// NewRemoteManager creates a Manager configured for shared-host mode.
+func NewRemoteManager(
+	cfg *config.Config,
+	eng engine.Engine,
+	copies *store.CopyStore,
+	events *store.EventStore,
+	ports *PortPool,
+	docker *client.Client,
+	runtime RemoteRuntimeConfig,
+) (*Manager, error) {
+	m, err := NewManager(cfg, eng, copies, events, ports, docker)
+	if err != nil {
+		return nil, err
+	}
+	runtime.Mode = AccessModeRemote
+	m.runtime = runtime
 	return m, nil
 }
 
@@ -74,11 +98,13 @@ func (m *Manager) StartPool(ctx context.Context) {
 
 // CreateOptions configures a copy creation request.
 type CreateOptions struct {
-	TTLSeconds int
-	RunID      string // optional: identifies the run/session that created this copy
-	JobName    string // optional: identifies the job/task within the run
-	DumpPath   string // optional: override dump path (local, s3://, http://); empty = use cfg.Dump.Path
-	Obfuscate  bool   // apply post-restore obfuscation rules (explicit opt-in)
+	TTLSeconds   int
+	RunID        string // optional: identifies the run/session that created this copy
+	JobName      string // optional: identifies the job/task within the run
+	OwnerSubject string // optional: authenticated caller identity for shared-host mode
+	DumpPath     string // optional: override dump path (local, s3://, http://); empty = use cfg.Dump.Path
+	DumpURI      string // optional: remote API hint; the local manager ignores this field
+	Obfuscate    bool   // apply post-restore obfuscation rules (explicit opt-in)
 }
 
 // Create provisions a new ephemeral database copy. When a pre-warmed copy is
@@ -92,14 +118,16 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*store.Copy, 
 
 	// Fast path: claim a pre-warmed copy from the pool (sub-millisecond).
 	if m.cfg.WarmPoolSize > 0 {
-		if c, err := m.copies.ClaimWarm(ttl); err == nil {
+		if c, err := m.copies.ClaimWarm(ttl, opts.OwnerSubject); err == nil {
 			_ = m.copies.UpdateStatus(c.ID, store.StatusReady,
+				store.WithOwnerSubject(opts.OwnerSubject),
 				store.WithRunID(opts.RunID),
 				store.WithJobName(opts.JobName),
 			)
 			_ = m.events.Append("copy", c.ID, "claimed", actor,
 				map[string]any{"warm": true, "ttl": ttl})
 			m.refiller.Signal()
+			c.OwnerSubject = opts.OwnerSubject
 			c.RunID = opts.RunID
 			c.JobName = opts.JobName
 			return c, nil
@@ -134,11 +162,13 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 	stopErr := m.docker.ContainerStop(ctx, containerName(id), container.StopOptions{Timeout: new(10)})
 	rmErr := m.docker.ContainerRemove(ctx, containerName(id), container.RemoveOptions{Force: true})
 
-	if stopErr != nil {
+	if stopErr != nil && !errdefs.IsNotFound(stopErr) {
 		slog.Warn("copy: container stop failed", "id", id, "err", stopErr)
 	}
-	if rmErr != nil {
+	if rmErr != nil && !errdefs.IsNotFound(rmErr) {
 		slog.Warn("copy: container remove failed", "id", id, "err", rmErr)
+		_ = m.copies.UpdateStatus(id, store.StatusFailed, store.WithErrorMessage(rmErr.Error()))
+		return fmt.Errorf("copy.Destroy remove %s: %w", id, rmErr)
 	}
 
 	m.ports.Release(c.Port)
@@ -187,6 +217,7 @@ func (m *Manager) RecoverOrphans(ctx context.Context) error {
 
 	// Find Docker containers with our labels that are not in SQLite.
 	containerList, err := m.docker.ContainerList(ctx, container.ListOptions{
+		All:     true,
 		Filters: filters.NewArgs(filters.Arg("label", labelManaged+"=true")),
 	})
 	if err != nil {
@@ -231,13 +262,20 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 
 	id := ulid.Make().String()
 	c := &store.Copy{
-		ID:         id,
-		Status:     store.StatusPending,
-		Port:       port,
-		RunID:      opts.RunID,
-		JobName:    opts.JobName,
-		TTLSeconds: ttl,
-		Warm:       warm,
+		ID:           id,
+		Status:       store.StatusPending,
+		Port:         port,
+		OwnerSubject: opts.OwnerSubject,
+		RunID:        opts.RunID,
+		JobName:      opts.JobName,
+		TTLSeconds:   ttl,
+		Warm:         warm,
+	}
+
+	copyRuntime, err := m.copyRuntime(id, port)
+	if err != nil {
+		m.ports.Release(port)
+		return nil, err
 	}
 
 	// Cleanup on any error after port allocation.
@@ -261,7 +299,7 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 	_ = m.events.Append("copy", id, "created", actor, map[string]any{"port": port, "warm": warm})
 
 	// Start the container.
-	containerID, err := m.startContainer(ctx, id, port, dumpPath)
+	containerID, err := m.startContainer(ctx, id, dumpPath, copyRuntime)
 	if err != nil {
 		cleanup(err)
 		return nil, fmt.Errorf("copy.Create start container: %w", err)
@@ -275,13 +313,13 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 	_ = m.events.Append("copy", id, "started", actor, map[string]any{"container_id": containerID})
 
 	// Wait for the engine.
-	if err := m.eng.WaitReady(port, 2*time.Minute); err != nil {
+	if err := m.eng.WaitReady(copyRuntime.Internal, 2*time.Minute); err != nil {
 		cleanup(err)
 		return nil, fmt.Errorf("copy.Create wait ready: %w", err)
 	}
 
 	// Restore the dump.
-	if err := m.eng.Restore(ctx, m.docker, dumpPath, containerName(id)); err != nil {
+	if err := m.eng.Restore(ctx, m.docker, dumpPath, containerName(id), copyRuntime.Bootstrap); err != nil {
 		cleanup(err)
 		return nil, fmt.Errorf("copy.Create restore: %w", err)
 	}
@@ -289,7 +327,7 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 	// Apply post-restore obfuscation only when explicitly requested via --obfuscate.
 	// Standard copies skip this because ditto reseed already bakes rules into the dump.
 	if opts.Obfuscate && len(m.cfg.Obfuscation.Rules) > 0 {
-		connStr := m.eng.ConnectionString("localhost", port)
+		connStr := m.eng.ConnectionString(copyRuntime.Internal)
 		obf := obfuscation.New(m.eng.Name(), connStr, m.cfg.Obfuscation.Rules)
 		if err := obf.Apply(ctx); err != nil {
 			cleanup(err)
@@ -298,7 +336,7 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 	}
 
 	now := time.Now()
-	connStr := m.eng.ConnectionString("localhost", port)
+	connStr := m.eng.ConnectionString(copyRuntime.External)
 	if err := m.copies.UpdateStatus(id, store.StatusReady,
 		store.WithConnectionString(connStr),
 		store.WithReadyAt(now),
@@ -306,7 +344,7 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 		cleanup(err)
 		return nil, err
 	}
-	_ = m.events.Append("copy", id, "ready", actor, map[string]any{"connection_string": connStr, "warm": warm})
+	_ = m.events.Append("copy", id, "ready", actor, map[string]any{"warm": warm})
 
 	c.Status = store.StatusReady
 	c.ContainerID = containerID
@@ -317,10 +355,10 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 
 // startContainer creates and starts a Docker container for the copy.
 // It bind-mounts the dump directory read-only at /dump.
-func (m *Manager) startContainer(ctx context.Context, id string, port int, dumpPath string) (string, error) {
+func (m *Manager) startContainer(ctx context.Context, id string, dumpPath string, copyRuntime CopyRuntime) (string, error) {
 	dumpDir := filepath.Dir(dumpPath)
-	portStr := fmt.Sprintf("%d", port)
-	exposedPort := nat.Port(portStr + "/tcp")
+	hostPortStr := fmt.Sprintf("%d", copyRuntime.External.Port)
+	exposedPort := nat.Port(fmt.Sprintf("%d/tcp", m.eng.ContainerPort()))
 
 	image := m.cfg.CopyImage
 	if image == "" {
@@ -329,11 +367,37 @@ func (m *Manager) startContainer(ctx context.Context, id string, port int, dumpP
 	if err := dockerutil.EnsureImage(ctx, m.docker, image); err != nil {
 		return "", fmt.Errorf("container image %s: %w", image, err)
 	}
+	spec := m.eng.ContainerSpec(copyRuntime.Bootstrap)
+	mounts := []mount.Mount{
+		{
+			Type:     mount.TypeBind,
+			Source:   dumpDir,
+			Target:   "/dump",
+			ReadOnly: true,
+		},
+	}
+	if copyRuntime.Bootstrap.TLSEnabled {
+		mounts = append(mounts,
+			mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   m.runtime.CertFile,
+				Target:   "/run/ditto/tls/server.crt",
+				ReadOnly: true,
+			},
+			mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   m.runtime.KeyFile,
+				Target:   "/run/ditto/tls/server.key",
+				ReadOnly: true,
+			},
+		)
+	}
 
 	resp, err := m.docker.ContainerCreate(ctx,
 		&container.Config{
 			Image: image,
-			Env:   m.eng.ContainerEnv(),
+			Env:   spec.Env,
+			Cmd:   spec.Cmd,
 			ExposedPorts: nat.PortSet{
 				exposedPort: struct{}{},
 			},
@@ -345,17 +409,10 @@ func (m *Manager) startContainer(ctx context.Context, id string, port int, dumpP
 		&container.HostConfig{
 			PortBindings: nat.PortMap{
 				exposedPort: []nat.PortBinding{
-					{HostIP: "127.0.0.1", HostPort: portStr},
+					{HostIP: copyRuntime.BindHost, HostPort: hostPortStr},
 				},
 			},
-			Mounts: []mount.Mount{
-				{
-					Type:     mount.TypeBind,
-					Source:   dumpDir,
-					Target:   "/dump",
-					ReadOnly: true,
-				},
-			},
+			Mounts: mounts,
 		},
 		nil, nil,
 		containerName(id),
@@ -386,4 +443,11 @@ func checkDump(path string, staleThreshold int) error {
 		slog.Warn("dump file is stale", "age", age.Round(time.Second), "path", path)
 	}
 	return nil
+}
+
+func (m *Manager) copyRuntime(id string, port int) (CopyRuntime, error) {
+	if m.runtime.Mode == AccessModeRemote {
+		return remoteRuntime(port, m.runtime, id)
+	}
+	return localRuntime(port), nil
 }

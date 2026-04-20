@@ -40,14 +40,13 @@ Create the first dump:
 DB_PASSWORD=secret ditto reseed
 ```
 
-If you want the dump refreshed automatically, run the daemon in the background or install it as a
-service:
+If you want the dump refreshed automatically, use cron or another scheduler to run `ditto reseed`:
 
 ```bash
-ditto daemon
+0 * * * * /usr/local/bin/ditto reseed
 ```
 
-For a long-running service setup, see [Operate a ditto host](operate-a-ditto-host.md).
+For a long-running shared-host setup, see [Operate a ditto host](operate-a-ditto-host.md).
 
 ## Start a shell session with a copy
 
@@ -134,11 +133,11 @@ aws s3 cp ~/.ditto/latest.gz s3://your-bucket/ditto/latest.gz
 Developers can then download the dump locally and continue using `copy create`, `copy run`, and
 `env export`.
 
-If you want developers to avoid local Docker entirely, run `ditto serve` on a shared host and point
+If you want developers to avoid local Docker entirely, run `ditto host` on a shared host and point
 their commands at it:
 
 ```bash
-export DITTO_TOKEN=my-token
+export DITTO_TOKEN="$(cat oidc.jwt)"
 ditto copy run --server=http://ditto.internal:8080 -- go test ./...
 ```
 

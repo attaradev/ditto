@@ -20,15 +20,20 @@ type dumpMock struct {
 	dumpErr error
 }
 
-func (d *dumpMock) Name() string                                  { return "mock" }
-func (d *dumpMock) ContainerImage() string                        { return "mock:latest" }
-func (d *dumpMock) ContainerEnv() []string                        { return nil }
-func (d *dumpMock) ConnectionString(host string, port int) string { return "mock://" }
-func (d *dumpMock) WaitReady(_ int, _ time.Duration) error        { return nil }
-func (d *dumpMock) Restore(_ context.Context, _ *client.Client, _ string, _ string) error {
+func (d *dumpMock) Name() string           { return "mock" }
+func (d *dumpMock) ContainerImage() string { return "mock:latest" }
+func (d *dumpMock) ContainerSpec(_ engine.CopyBootstrap) engine.ContainerSpec {
+	return engine.ContainerSpec{}
+}
+func (d *dumpMock) ContainerPort() int                                { return 1234 }
+func (d *dumpMock) ConnectionString(_ engine.ConnectionConfig) string { return "mock://" }
+func (d *dumpMock) WaitReady(_ engine.ConnectionConfig, _ time.Duration) error {
 	return nil
 }
-func (d *dumpMock) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string, _ engine.DumpOptions) error {
+func (d *dumpMock) Restore(_ context.Context, _ *client.Client, _ string, _ string, _ engine.CopyBootstrap) error {
+	return nil
+}
+func (d *dumpMock) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string, _ engine.CopyBootstrap, _ engine.DumpOptions) error {
 	return nil
 }
 func (d *dumpMock) Dump(_ context.Context, _ *client.Client, _ string, _ engine.SourceConfig, dest string, _ engine.DumpOptions) error {

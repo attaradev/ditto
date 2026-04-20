@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// NewCopy creates an ephemeral database copy on the ditto server, registers
+// NewCopy creates an ephemeral database copy on the ditto host, registers
 // t.Cleanup to delete it when the test finishes, and returns the connection
 // string. Calls t.Fatal on any error.
 //

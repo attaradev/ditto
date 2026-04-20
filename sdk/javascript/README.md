@@ -1,6 +1,6 @@
 # ditto JavaScript SDK
 
-TypeScript client for provisioning ephemeral database copies from a running ditto server.
+TypeScript client for provisioning ephemeral database copies from a running ditto host.
 
 ## Install
 
@@ -46,5 +46,5 @@ await client.withCopy(async (dsn) => {
 `DittoClient` reads these variables by default:
 
 - `DITTO_SERVER_URL`
-- `DITTO_TOKEN`
+- `DITTO_TOKEN` (typically a bearer JWT in shared-host mode)
 - `DITTO_TTL`

@@ -193,6 +193,19 @@ func (s *Scheduler) bakeObfuscation(ctx context.Context, rawPath, outPath string
 	if err != nil {
 		return fmt.Errorf("allocate staging port: %w", err)
 	}
+	copyBootstrap := engine.CopyBootstrap{
+		Database:     "ditto",
+		User:         "ditto",
+		Password:     "ditto",
+		RootPassword: "ditto-root",
+	}
+	conn := engine.ConnectionConfig{
+		Host:     "localhost",
+		Port:     port,
+		Database: copyBootstrap.Database,
+		User:     copyBootstrap.User,
+		Password: copyBootstrap.Password,
+	}
 
 	image := s.cfg.CopyImage
 	if image == "" {
@@ -209,20 +222,20 @@ func (s *Scheduler) bakeObfuscation(ctx context.Context, rawPath, outPath string
 		_ = s.docker.ContainerRemove(context.Background(), ctrID, container.RemoveOptions{Force: true})
 	}()
 
-	if err := s.eng.WaitReady(port, 3*time.Minute); err != nil {
+	if err := s.eng.WaitReady(conn, 3*time.Minute); err != nil {
 		return fmt.Errorf("staging ready: %w", err)
 	}
 
-	if err := s.eng.Restore(ctx, s.docker, rawPath, ctrName); err != nil {
+	if err := s.eng.Restore(ctx, s.docker, rawPath, ctrName, copyBootstrap); err != nil {
 		return fmt.Errorf("staging restore: %w", err)
 	}
 
-	connStr := s.eng.ConnectionString("localhost", port)
+	connStr := s.eng.ConnectionString(conn)
 	if err := obfuscation.New(s.eng.Name(), connStr, s.cfg.Obfuscation.Rules).Apply(ctx); err != nil {
 		return fmt.Errorf("staging obfuscate: %w", err)
 	}
 
-	if err := s.eng.DumpFromContainer(ctx, s.docker, ctrName, outPath, engine.DumpOptions{}); err != nil {
+	if err := s.eng.DumpFromContainer(ctx, s.docker, ctrName, outPath, copyBootstrap, engine.DumpOptions{}); err != nil {
 		return fmt.Errorf("staging re-dump: %w", err)
 	}
 
@@ -238,12 +251,19 @@ func (s *Scheduler) startStagingContainer(ctx context.Context, name string, port
 	}
 
 	portStr := fmt.Sprintf("%d", port)
-	exposedPort := nat.Port(portStr + "/tcp")
+	exposedPort := nat.Port(fmt.Sprintf("%d/tcp", s.eng.ContainerPort()))
+	spec := s.eng.ContainerSpec(engine.CopyBootstrap{
+		Database:     "ditto",
+		User:         "ditto",
+		Password:     "ditto",
+		RootPassword: "ditto-root",
+	})
 
 	resp, err := s.docker.ContainerCreate(ctx,
 		&container.Config{
 			Image:        image,
-			Env:          s.eng.ContainerEnv(),
+			Env:          spec.Env,
+			Cmd:          spec.Cmd,
 			ExposedPorts: nat.PortSet{exposedPort: struct{}{}},
 		},
 		&container.HostConfig{

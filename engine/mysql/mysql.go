@@ -38,17 +38,33 @@ func (e *Engine) Name() string { return "mysql" }
 
 func (e *Engine) ContainerImage() string { return "mysql:8.4" }
 
-func (e *Engine) ContainerEnv() []string {
-	return []string{
-		"MYSQL_USER=ditto",
-		"MYSQL_PASSWORD=ditto",
-		"MYSQL_DATABASE=ditto",
-		"MYSQL_ROOT_PASSWORD=ditto-root",
+func (e *Engine) ContainerPort() int { return 3306 }
+
+func (e *Engine) ContainerSpec(copy engine.CopyBootstrap) engine.ContainerSpec {
+	spec := engine.ContainerSpec{
+		Env: []string{
+			"MYSQL_USER=" + copy.User,
+			"MYSQL_PASSWORD=" + copy.Password,
+			"MYSQL_DATABASE=" + copy.Database,
+			"MYSQL_ROOT_PASSWORD=" + copy.RootPassword,
+		},
 	}
+	if copy.TLSEnabled {
+		spec.Cmd = []string{
+			"--require_secure_transport=ON",
+			"--ssl-cert=/run/ditto/tls/server.crt",
+			"--ssl-key=/run/ditto/tls/server.key",
+		}
+	}
+	return spec
 }
 
-func (e *Engine) ConnectionString(host string, port int) string {
-	return fmt.Sprintf("ditto:ditto@tcp(%s:%d)/ditto", host, port)
+func (e *Engine) ConnectionString(conn engine.ConnectionConfig) string {
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", conn.User, conn.Password, conn.Host, conn.Port, conn.Database)
+	if conn.TLSEnabled {
+		dsn += "?tls=true"
+	}
+	return dsn
 }
 
 // Dump runs mysqldump inside a short-lived helper container, then compresses
@@ -137,7 +153,7 @@ func (e *Engine) Dump(
 // containerName is the Docker container name (e.g. "ditto-<id>") as set by the
 // copy manager. The manager calls WaitReady before Restore, so readiness is
 // already guaranteed when this method is invoked.
-func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath string, containerName string) error {
+func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath string, containerName string, copy engine.CopyBootstrap) error {
 	if docker == nil {
 		return fmt.Errorf("mysql: docker runtime is required")
 	}
@@ -158,7 +174,7 @@ func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath st
 	}()
 
 	if err := dockerutil.Exec(ctx, docker, containerName, []string{
-		"mysql", "-u", "ditto", "-pditto", "ditto",
+		"mysql", "-u", copy.User, "-p" + copy.Password, copy.Database,
 	}, gz); err != nil {
 		return fmt.Errorf("mysql: restore failed: %w", err)
 	}
@@ -169,16 +185,16 @@ func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath st
 // running inside containerName and writes it to destPath on the host.
 // The container must have its dump directory mounted at /dump (read-write).
 // When opts.SchemaOnly is true, --no-data is passed to mysqldump.
-func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, opts engine.DumpOptions) error {
+func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, copy engine.CopyBootstrap, opts engine.DumpOptions) error {
 	if docker == nil {
 		return fmt.Errorf("mysql: docker runtime is required")
 	}
 	sqlFile := filepath.Base(destPath) + ".sql"
 	cmd := []string{
-		"mysqldump", "-uditto", "-pditto",
+		"mysqldump", "-u" + copy.User, "-p" + copy.Password,
 		"--single-transaction", "--routines", "--triggers",
 		"--result-file=/dump/" + sqlFile,
-		"ditto",
+		copy.Database,
 	}
 	if opts.SchemaOnly {
 		cmd = append(cmd, "--no-data")
@@ -198,23 +214,23 @@ func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, c
 }
 
 // WaitReady polls port until MySQL is accepting connections.
-func (e *Engine) WaitReady(port int, timeout time.Duration) error {
+func (e *Engine) WaitReady(conn engine.ConnectionConfig, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	addr := fmt.Sprintf("localhost:%d", port)
+	addr := fmt.Sprintf("%s:%d", conn.Host, conn.Port)
 
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		tcpConn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err == nil {
-			_ = conn.Close()
+			_ = tcpConn.Close()
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	if time.Now().After(deadline) {
-		return fmt.Errorf("mysql: timed out waiting for TCP on port %d", port)
+		return fmt.Errorf("mysql: timed out waiting for TCP on port %d", conn.Port)
 	}
 
-	dsn := fmt.Sprintf("ditto:ditto@tcp(localhost:%d)/ditto", port)
+	dsn := e.ConnectionString(conn)
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return fmt.Errorf("mysql: open readiness probe DB: %w", err)
@@ -230,7 +246,7 @@ func (e *Engine) WaitReady(port int, timeout time.Duration) error {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("mysql: timed out waiting for SELECT 1 on port %d", port)
+	return fmt.Errorf("mysql: timed out waiting for SELECT 1 on port %d", conn.Port)
 }
 
 var _ engine.Engine = (*Engine)(nil)

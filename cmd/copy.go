@@ -15,8 +15,8 @@ func newCopyCmd() *cobra.Command {
 	}
 
 	cmd.PersistentFlags().StringVar(&serverURL, "server", "",
-		"Remote ditto server URL for copy operations (e.g. http://ditto.internal:8080). "+
-			"Auth token from DITTO_TOKEN env var.")
+		"Shared ditto host URL for copy operations (e.g. http://ditto.internal:8080). "+
+			"Bearer token from DITTO_TOKEN.")
 
 	// Store the server URL in context so sub-commands can access it via
 	// copyClientFromContext without reading the flag directly.

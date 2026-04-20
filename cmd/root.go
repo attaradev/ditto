@@ -112,8 +112,7 @@ Use it when shared staging databases make test runs flaky, schema fidelity matte
 		newCopyCmd(),
 		newReseedCmd(),
 		newStatusCmd(),
-		newDaemonCmd(),
-		newServeCmd(),
+		newHostCmd(),
 		newErdCmd(),
 		newEnvCmd(),
 	)

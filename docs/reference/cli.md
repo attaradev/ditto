@@ -32,12 +32,12 @@ Flags:
 
 | Flag | Meaning |
 | --- | --- |
-| `--dump <uri>` | Restore from a local path, `s3://`, or `https://` source |
+| `--dump <uri>` | Restore from a local path, `s3://`, or `https://` source; with `--server`, the host resolves it |
 | `--format <mode>` | Output style: `auto`, `pipe`, or `json` |
 | `--label <name>` | Run identifier override |
 | `--obfuscate` | Apply configured obfuscation post-restore |
 | `--ttl <duration>` | Override lifetime for this copy |
-| `--server <url>` | Use a remote ditto host |
+| `--server <url>` | Use a shared ditto host; bearer token comes from `DITTO_TOKEN` |
 
 ### `ditto copy run`
 
@@ -61,7 +61,7 @@ Flags:
 | `--label <name>` | Run identifier override |
 | `--obfuscate` | Apply configured obfuscation post-restore |
 | `--ttl <duration>` | Override lifetime for this copy |
-| `--server <url>` | Use a remote ditto host |
+| `--server <url>` | Use a shared ditto host; bearer token comes from `DITTO_TOKEN` |
 
 ### Other `copy` subcommands
 
@@ -83,12 +83,12 @@ ditto reseed
 
 This command succeeds only after a new dump completes successfully.
 
-## `ditto daemon`
+## `ditto host`
 
-Keep the host ready for CI:
+Run the shared-host controller:
 
 ```bash
-ditto daemon
+ditto host
 ```
 
 Responsibilities:
@@ -96,16 +96,8 @@ Responsibilities:
 - refresh the dump on the configured schedule
 - delete copies after TTL expiry
 - refill the warm pool when enabled
-
-## `ditto serve`
-
-Expose the copy lifecycle over HTTP:
-
-```bash
-ditto serve
-```
-
-Clients use `--server=http://host:8080` plus `DITTO_TOKEN` when required.
+- recover stuck copies and orphan containers on startup
+- serve the authenticated `/v2` API for remote callers
 
 ## `ditto status`
 
@@ -166,4 +158,4 @@ Flags:
 | `--format <type>` | Output format: `mermaid` or `dbml` |
 | `--output <path>` | Write output to a file |
 | `--source` | Connect to the source database directly |
-| `--server <url>` | Create the temporary copy via a remote ditto host |
+| `--server <url>` | Create the temporary copy via a shared ditto host |

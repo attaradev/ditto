@@ -126,8 +126,19 @@ port_pool_end: 5600
 #       keep_last: 4          # ************1234
 #       mask_char: "*"
 
-# HTTP API server settings (used by ditto serve).
+# Shared-host settings (used by ditto host).
 # server:
+#   enabled: true
 #   addr: ":8080"
-#   token: ""              # plaintext Bearer token (dev only — never commit real tokens)
-#   token_secret: ""       # secret reference: env:VAR, file:/path, or arn:aws:...
+#   advertise_host: ditto.internal
+#   db_bind_host: 0.0.0.0
+#   copy_secret_secret: env:DITTO_COPY_SECRET
+#   auth:
+#     issuer: https://issuer.example.com/
+#     audience: ditto-ci
+#     jwks_url: https://issuer.example.com/.well-known/jwks.json
+#     admin_claim: role
+#     admin_value: ditto-admin
+#   db_tls:
+#     cert_file: /etc/ditto/tls/server.crt
+#     key_file: /etc/ditto/tls/server.key

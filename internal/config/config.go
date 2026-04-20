@@ -25,11 +25,30 @@ type Config struct {
 	Obfuscation    Obfuscation  `mapstructure:"obfuscation"`
 }
 
-// ServerConfig holds HTTP server and authentication settings for ditto serve.
+// ServerConfig holds shared-host listener and authentication settings for ditto host.
 type ServerConfig struct {
-	Addr        string `mapstructure:"addr"`         // listen address, default ":8080"
-	Token       string `mapstructure:"token"`        // plaintext Bearer token (dev only)
-	TokenSecret string `mapstructure:"token_secret"` // secret reference: env:VAR, file:/path, or arn:aws:...
+	Enabled          bool             `mapstructure:"enabled"`
+	Addr             string           `mapstructure:"addr"`               // listen address, default ":8080"
+	AdvertiseHost    string           `mapstructure:"advertise_host"`     // host/DNS name returned in remote DSNs
+	DBBindHost       string           `mapstructure:"db_bind_host"`       // host interface used for published DB ports
+	CopySecretSecret string           `mapstructure:"copy_secret_secret"` // secret reference used to derive per-copy credentials
+	Auth             ServerAuthConfig `mapstructure:"auth"`
+	DBTLS            ServerDBTLS      `mapstructure:"db_tls"`
+}
+
+// ServerAuthConfig holds OIDC validation settings for ditto host.
+type ServerAuthConfig struct {
+	Issuer     string `mapstructure:"issuer"`
+	Audience   string `mapstructure:"audience"`
+	JWKSURL    string `mapstructure:"jwks_url"`
+	AdminClaim string `mapstructure:"admin_claim"`
+	AdminValue string `mapstructure:"admin_value"`
+}
+
+// ServerDBTLS holds the TLS certificate material mounted into remote copy containers.
+type ServerDBTLS struct {
+	CertFile string `mapstructure:"cert_file"`
+	KeyFile  string `mapstructure:"key_file"`
 }
 
 // Source holds connection parameters for the RDS source database.
@@ -89,6 +108,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("warm_pool_size", 0)
 	v.SetDefault("docker_host", "")
 	v.SetDefault("server.addr", ":8080")
+	v.SetDefault("server.enabled", false)
 
 	v.SetEnvPrefix("DITTO")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -213,6 +233,38 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Source.Password == "" && cfg.Source.PasswordSecret == "" {
 		missing = append(missing, "source.password or source.password_secret")
+	}
+	if cfg.CopyTTLSeconds <= 0 {
+		return fmt.Errorf("config: copy_ttl_seconds must be greater than zero")
+	}
+	if cfg.PortPoolStart <= 0 || cfg.PortPoolEnd <= 0 || cfg.PortPoolEnd < cfg.PortPoolStart {
+		return fmt.Errorf("config: invalid port pool range %d-%d", cfg.PortPoolStart, cfg.PortPoolEnd)
+	}
+	if cfg.Server.Enabled {
+		if cfg.Server.AdvertiseHost == "" {
+			missing = append(missing, "server.advertise_host")
+		}
+		if cfg.Server.DBBindHost == "" {
+			missing = append(missing, "server.db_bind_host")
+		}
+		if cfg.Server.CopySecretSecret == "" {
+			missing = append(missing, "server.copy_secret_secret")
+		}
+		if cfg.Server.Auth.Issuer == "" {
+			missing = append(missing, "server.auth.issuer")
+		}
+		if cfg.Server.Auth.Audience == "" {
+			missing = append(missing, "server.auth.audience")
+		}
+		if cfg.Server.Auth.JWKSURL == "" {
+			missing = append(missing, "server.auth.jwks_url")
+		}
+		if cfg.Server.DBTLS.CertFile == "" {
+			missing = append(missing, "server.db_tls.cert_file")
+		}
+		if cfg.Server.DBTLS.KeyFile == "" {
+			missing = append(missing, "server.db_tls.key_file")
+		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: missing required fields: %v", missing)

@@ -81,7 +81,7 @@ If you do not use `source.url`, these fields are required:
 
 ### Secret references
 
-`password_secret` and `token_secret` support:
+`source.password_secret` and `server.copy_secret_secret` support:
 
 | Format | Backend |
 | --- | --- |
@@ -109,7 +109,7 @@ dump:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `dump.schedule` | hourly | Cron schedule used by `ditto daemon` |
+| `dump.schedule` | hourly | Cron schedule used by `ditto host` |
 | `dump.path` | `/data/dump/latest.gz` | Local path for the compressed dump |
 | `dump.stale_threshold` | `7200` | Freshness budget in seconds; staleness warnings appear once the file is roughly 2x older than this |
 | `dump.client_image` | engine default | Optional helper image for dump operations |
@@ -128,24 +128,46 @@ The scheduler writes to `<path>.tmp` and then atomically renames the file into p
 | `copy_image` | engine default | Optional image override for copy containers |
 | `docker_host` | empty | Optional Docker daemon override |
 
-Warm pools are maintained by `ditto daemon` or `ditto serve`.
+Warm pools are maintained by `ditto host`.
 
 ## `server`
 
 ```yaml
 server:
+  enabled: true
   addr: ":8080"
-  token: ""
-  token_secret: env:DITTO_TOKEN
+  advertise_host: ditto.internal
+  db_bind_host: 0.0.0.0
+  copy_secret_secret: env:DITTO_COPY_SECRET
+  auth:
+    issuer: https://issuer.example.com/
+    audience: ditto-ci
+    jwks_url: https://issuer.example.com/.well-known/jwks.json
+    admin_claim: role
+    admin_value: ditto-admin
+  db_tls:
+    cert_file: /etc/ditto/tls/server.crt
+    key_file: /etc/ditto/tls/server.key
 ```
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `server.addr` | `:8080` | Listen address for `ditto serve` |
-| `server.token` | empty | Plaintext bearer token for development only |
-| `server.token_secret` | empty | Secret reference for the bearer token |
+| `server.enabled` | `false` | Enables shared-host mode for `ditto host` |
+| `server.addr` | `:8080` | Listen address for the shared-host API |
+| `server.advertise_host` | empty | Hostname or address returned in remote copy DSNs |
+| `server.db_bind_host` | empty | Interface used when publishing copy container ports |
+| `server.copy_secret_secret` | empty | Secret reference used to derive per-copy database credentials |
+| `server.auth.issuer` | empty | Expected JWT issuer for bearer-token validation |
+| `server.auth.audience` | empty | Expected JWT audience for bearer-token validation |
+| `server.auth.jwks_url` | empty | JWKS endpoint used to fetch signing keys |
+| `server.auth.admin_claim` | empty | Optional JWT claim used to recognize admin callers |
+| `server.auth.admin_value` | empty | Required value for `server.auth.admin_claim` |
+| `server.db_tls.cert_file` | empty | Certificate mounted into remote copy containers |
+| `server.db_tls.key_file` | empty | Private key mounted into remote copy containers |
 
-If no token is configured, `ditto serve` accepts unauthenticated requests.
+`ditto host` requires the full `server.*` block above. Clients present bearer tokens through
+`DITTO_TOKEN`; in production those are typically short-lived OIDC JWTs issued by the CI platform or
+identity provider in front of ditto.
 
 ## Obfuscation
 

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -39,7 +40,7 @@ Examples:
   ditto erd --format=dbml               # DBML to stdout
   ditto erd --output=schema.md          # Write Mermaid to file
   ditto erd --source                    # Connect to source DB directly (no copy)
-  ditto erd --server http://ditto:8080  # Use remote ditto server for the copy`,
+  ditto erd --server http://ditto:8080  # Use a shared ditto host for the copy`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runERD(cmd, format, output, useSource)
 		},
@@ -48,7 +49,14 @@ Examples:
 	cmd.Flags().StringVar(&format, "format", "mermaid", "Output format: mermaid, dbml")
 	cmd.Flags().StringVar(&output, "output", "", "Output file path (default: stdout)")
 	cmd.Flags().BoolVar(&useSource, "source", false, "Connect directly to source DB instead of creating a copy")
-	cmd.Flags().StringVar(&serverURL, "server", "", "Remote ditto server URL (e.g. http://ditto.internal:8080)")
+	cmd.Flags().StringVar(&serverURL, "server", "", "Shared ditto host URL (e.g. http://ditto.internal:8080)")
+	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		if serverURL != "" {
+			ctx := context.WithValue(cmd.Context(), keyServerURL, serverURL)
+			cmd.SetContext(ctx)
+		}
+		return nil
+	}
 
 	return cmd
 }

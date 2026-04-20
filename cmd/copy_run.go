@@ -19,13 +19,20 @@ import (
 
 // copyClientFromContext returns an HTTPClient when --server is set, or the
 // local Manager otherwise. This makes copy commands transparent to whether
-// they operate locally or against a remote ditto server.
+// they operate locally or against a shared ditto host.
 func copyClientFromContext(cmd *cobra.Command) copypkg.CopyClient {
-	if url, ok := cmd.Context().Value(keyServerURL).(string); ok && url != "" {
+	if url := serverURLFromContext(cmd); url != "" {
 		token := os.Getenv("DITTO_TOKEN")
 		return copypkg.NewHTTPClient(url, token)
 	}
 	return managerFromContext(cmd)
+}
+
+func serverURLFromContext(cmd *cobra.Command) string {
+	if url, ok := cmd.Context().Value(keyServerURL).(string); ok {
+		return url
+	}
+	return ""
 }
 
 // detectRunID returns the first non-empty value from a standard set of
@@ -81,19 +88,23 @@ func runCopyCreate(cmd *cobra.Command, ttl, label, format, dumpURI string, obfus
 		JobName: detectJobName(),
 	}
 	if ttl != "" {
-		d, err := time.ParseDuration(ttl)
+		ttlSeconds, err := parseTTL(ttl)
 		if err != nil {
-			return fmt.Errorf("invalid --ttl %q: %w", ttl, err)
+			return err
 		}
-		opts.TTLSeconds = int(d.Seconds())
+		opts.TTLSeconds = ttlSeconds
 	}
 	if dumpURI != "" {
-		localPath, cleanup, err := dumpfetch.Fetch(cmd.Context(), dumpURI)
-		if err != nil {
-			return fmt.Errorf("--dump: %w", err)
+		if serverURLFromContext(cmd) != "" {
+			opts.DumpURI = dumpURI
+		} else {
+			localPath, cleanup, err := dumpfetch.Fetch(cmd.Context(), dumpURI)
+			if err != nil {
+				return fmt.Errorf("--dump: %w", err)
+			}
+			defer cleanup()
+			opts.DumpPath = localPath
 		}
-		defer cleanup()
-		opts.DumpPath = localPath
 	}
 	opts.Obfuscate = obfuscate
 
@@ -132,6 +143,36 @@ func runCopyDelete(cmd *cobra.Command, id string) error {
 }
 
 func runCopyLogs(cmd *cobra.Command, id string) error {
+	if url := serverURLFromContext(cmd); url != "" {
+		client := copypkg.NewHTTPClient(url, os.Getenv("DITTO_TOKEN"))
+		events, err := client.Events(cmd.Context(), id)
+		if err != nil {
+			return err
+		}
+		if isPipe() {
+			return json.NewEncoder(os.Stdout).Encode(events)
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		if _, err := fmt.Fprintln(w, "TIME\tACTION\tACTOR\tMETADATA"); err != nil {
+			return err
+		}
+		for _, e := range events {
+			meta := ""
+			if len(e.Metadata) > 0 {
+				b, err := json.Marshal(e.Metadata)
+				if err != nil {
+					return fmt.Errorf("marshal event metadata: %w", err)
+				}
+				meta = string(b)
+			}
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+				e.CreatedAt.Format(time.RFC3339), e.Action, e.Actor, meta); err != nil {
+				return err
+			}
+		}
+		return w.Flush()
+	}
+
 	es := eventStoreFromContext(cmd)
 	events, err := es.List(id)
 	if err != nil {
@@ -184,19 +225,23 @@ func runCopyExec(cmd *cobra.Command, ttl, label, dumpURI string, obfuscate bool,
 		JobName: detectJobName(),
 	}
 	if ttl != "" {
-		d, err := time.ParseDuration(ttl)
+		ttlSeconds, err := parseTTL(ttl)
 		if err != nil {
-			return fmt.Errorf("invalid --ttl %q: %w", ttl, err)
+			return err
 		}
-		opts.TTLSeconds = int(d.Seconds())
+		opts.TTLSeconds = ttlSeconds
 	}
 	if dumpURI != "" {
-		localPath, cleanup, err := dumpfetch.Fetch(ctx, dumpURI)
-		if err != nil {
-			return fmt.Errorf("--dump: %w", err)
+		if serverURLFromContext(cmd) != "" {
+			opts.DumpURI = dumpURI
+		} else {
+			localPath, cleanup, err := dumpfetch.Fetch(ctx, dumpURI)
+			if err != nil {
+				return fmt.Errorf("--dump: %w", err)
+			}
+			defer cleanup()
+			opts.DumpPath = localPath
 		}
-		defer cleanup()
-		opts.DumpPath = localPath
 	}
 	opts.Obfuscate = obfuscate
 
@@ -253,9 +298,24 @@ func printCopyTable(copies []*store.Copy) error {
 		}
 		id := styleID.Render(c.ID)
 		age := time.Since(c.CreatedAt).Round(time.Second).String()
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", id, status, c.Port, age, c.ConnectionString); err != nil {
+		conn := c.ConnectionString
+		if conn == "" {
+			conn = "-"
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", id, status, c.Port, age, conn); err != nil {
 			return err
 		}
 	}
 	return w.Flush()
+}
+
+func parseTTL(ttl string) (int, error) {
+	d, err := time.ParseDuration(ttl)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --ttl %q: %w", ttl, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid --ttl %q: duration must be greater than zero", ttl)
+	}
+	return int(d.Seconds()), nil
 }

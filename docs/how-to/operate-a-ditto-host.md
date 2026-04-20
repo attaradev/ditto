@@ -35,25 +35,39 @@ port_pool_start: 5433
 port_pool_end: 5600
 
 server:
+  enabled: true
   addr: ":8080"
-  token_secret: env:DITTO_TOKEN
+  advertise_host: ditto.internal
+  db_bind_host: 0.0.0.0
+  copy_secret_secret: env:DITTO_COPY_SECRET
+  auth:
+    issuer: https://issuer.example.com/
+    audience: ditto-ci
+    jwks_url: https://issuer.example.com/.well-known/jwks.json
+    admin_claim: role
+    admin_value: ditto-admin
+  db_tls:
+    cert_file: /etc/ditto/tls/server.crt
+    key_file: /etc/ditto/tls/server.key
 ```
 
-Use secret references instead of inline plaintext for long-lived hosts. See
+Use secret references instead of inline plaintext for long-lived hosts, and provision a certificate
+whose subject matches `server.advertise_host`. See
 [Configuration reference](../reference/configuration.md#secret-references).
 
-## Keep dumps fresh
+## Run the controller
 
-Run the daemon under a service manager so dumps refresh and expired copies are cleaned up:
+Run `ditto host` under a service manager so one process owns dump refresh, warm-pool refill, TTL
+expiry, orphan recovery, and the `/v2` API:
 
 ```ini
 [Unit]
-Description=ditto daemon
+Description=ditto host
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/ditto daemon
+ExecStart=/usr/local/bin/ditto host
 Restart=on-failure
 User=runner
 WorkingDirectory=/home/runner
@@ -75,22 +89,15 @@ If you only need scheduled dump refreshes and not automatic copy cleanup, a cron
 0 * * * * /usr/local/bin/ditto reseed >> /var/log/ditto-reseed.log 2>&1
 ```
 
-## Expose remote copy creation
-
-Run the API service when CI runners or developer machines should request copies from this host:
+Clients then use bearer tokens from their identity provider or CI platform:
 
 ```bash
-ditto serve
-```
-
-Clients then use:
-
-```bash
-export DITTO_TOKEN=my-secret-token
+export DITTO_TOKEN="$(cat oidc.jwt)"
 ditto copy create --server=http://ditto.internal:8080
 ```
 
-Protect the service with a token and network policy. See [SECURITY.md](../../SECURITY.md).
+Protect the service with network policy appropriate to the published DB ports. See
+[SECURITY.md](../../SECURITY.md).
 
 ## Runner setup
 

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,7 @@ type Copy struct {
 	Port             int        `json:"port"`
 	ContainerID      string     `json:"container_id"`
 	ConnectionString string     `json:"connection_string"`
+	OwnerSubject     string     `json:"owner_subject"`
 	RunID            string     `json:"run_id"`
 	JobName          string     `json:"job_name"`
 	ErrorMessage     string     `json:"error_message"`
@@ -51,10 +53,10 @@ func (s *CopyStore) Create(c *Copy) error {
 	_, err := s.db.Exec(`
 		INSERT INTO copies
 			(id, status, port, container_id, connection_string,
-			 run_id, job_name, error_message, ttl_seconds, warm)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 owner_subject, run_id, job_name, error_message, ttl_seconds, warm)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.Status, c.Port, c.ContainerID, c.ConnectionString,
-		c.RunID, c.JobName, c.ErrorMessage, ttlOrDefault(c.TTLSeconds),
+		c.OwnerSubject, c.RunID, c.JobName, c.ErrorMessage, ttlOrDefault(c.TTLSeconds),
 		boolToInt(c.Warm),
 	)
 	if err != nil {
@@ -66,7 +68,7 @@ func (s *CopyStore) Create(c *Copy) error {
 // Get returns the copy with the given id, or sql.ErrNoRows if not found.
 func (s *CopyStore) Get(id string) (*Copy, error) {
 	row := s.db.QueryRow(`
-		SELECT id, status, port, container_id, connection_string,
+		SELECT id, status, port, container_id, connection_string, owner_subject,
 		       run_id, job_name, error_message,
 		       created_at, ready_at, destroyed_at, ttl_seconds, warm
 		FROM copies WHERE id = ?`, id)
@@ -107,6 +109,10 @@ func (s *CopyStore) UpdateStatus(id string, status CopyStatus, opts ...UpdateOpt
 		set += ", run_id = ?"
 		args = append(args, *u.runID)
 	}
+	if u.ownerSubject != nil {
+		set += ", owner_subject = ?"
+		args = append(args, *u.ownerSubject)
+	}
 	if u.jobName != nil {
 		set += ", job_name = ?"
 		args = append(args, *u.jobName)
@@ -123,12 +129,15 @@ func (s *CopyStore) UpdateStatus(id string, status CopyStatus, opts ...UpdateOpt
 // List returns all copies matching filter. Ordered by created_at DESC.
 func (s *CopyStore) List(filter ListFilter) ([]*Copy, error) {
 	query := `
-		SELECT id, status, port, container_id, connection_string,
+		SELECT id, status, port, container_id, connection_string, owner_subject,
 		       run_id, job_name, error_message,
 		       created_at, ready_at, destroyed_at, ttl_seconds, warm
 		FROM copies`
 
-	var args []any
+	var (
+		args       []any
+		conditions []string
+	)
 	if len(filter.Statuses) > 0 {
 		placeholders := "?"
 		args = append(args, string(filter.Statuses[0]))
@@ -136,7 +145,14 @@ func (s *CopyStore) List(filter ListFilter) ([]*Copy, error) {
 			placeholders += ", ?"
 			args = append(args, string(s))
 		}
-		query += " WHERE status IN (" + placeholders + ")"
+		conditions = append(conditions, "status IN ("+placeholders+")")
+	}
+	if filter.OwnerSubject != "" {
+		conditions = append(conditions, "owner_subject = ?")
+		args = append(args, filter.OwnerSubject)
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	query += " ORDER BY created_at DESC"
 
@@ -162,8 +178,8 @@ func (s *CopyStore) List(filter ListFilter) ([]*Copy, error) {
 // ListExpired returns all READY or IN_USE non-warm copies whose TTL has elapsed.
 func (s *CopyStore) ListExpired() ([]*Copy, error) {
 	rows, err := s.db.Query(`
-		SELECT id, status, port, container_id, connection_string,
-		       run_id, job_name, error_message,
+			SELECT id, status, port, container_id, connection_string,
+			       owner_subject, run_id, job_name, error_message,
 		       created_at, ready_at, destroyed_at, ttl_seconds, warm
 		FROM copies
 		WHERE status IN (?, ?)
@@ -193,14 +209,14 @@ func (s *CopyStore) ListExpired() ([]*Copy, error) {
 // remnants).
 func (s *CopyStore) ListStuck() ([]*Copy, error) {
 	return s.List(ListFilter{
-		Statuses: []CopyStatus{StatusCreating, StatusDestroying},
+		Statuses: []CopyStatus{StatusPending, StatusCreating, StatusDestroying},
 	})
 }
 
 // ClaimWarm atomically finds one StatusReady warm copy, resets its created_at
 // to NOW (restarting the TTL clock from claim time), marks warm=0, and returns
 // it. Returns sql.ErrNoRows if the pool is empty.
-func (s *CopyStore) ClaimWarm(ttlSeconds int) (*Copy, error) {
+func (s *CopyStore) ClaimWarm(ttlSeconds int, ownerSubject string) (*Copy, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("copy.ClaimWarm begin: %w", err)
@@ -217,13 +233,14 @@ func (s *CopyStore) ClaimWarm(ttlSeconds int) (*Copy, error) {
 	}
 
 	_, err = tx.Exec(`
-		UPDATE copies
-		SET warm=0,
-		    ttl_seconds=?,
-		    created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-		    ready_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-		WHERE id=?`,
-		ttlOrDefault(ttlSeconds), id,
+			UPDATE copies
+			SET warm=0,
+			    ttl_seconds=?,
+			    owner_subject=?,
+			    created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+			    ready_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+			WHERE id=?`,
+		ttlOrDefault(ttlSeconds), ownerSubject, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("copy.ClaimWarm update %s: %w", id, err)
@@ -251,7 +268,8 @@ func (s *CopyStore) CountWarm() (int, error) {
 
 // ListFilter controls which copies are returned by List.
 type ListFilter struct {
-	Statuses []CopyStatus
+	Statuses     []CopyStatus
+	OwnerSubject string
 }
 
 // UpdateOption is a functional option for UpdateStatus.
@@ -264,6 +282,7 @@ type updateArgs struct {
 	readyAt          *time.Time
 	destroyedAt      *time.Time
 	errorMessage     *string
+	ownerSubject     *string
 	runID            *string
 	jobName          *string
 }
@@ -292,6 +311,10 @@ func WithRunID(s string) UpdateOption {
 	return func(u *updateArgs) { u.runID = &s }
 }
 
+func WithOwnerSubject(s string) UpdateOption {
+	return func(u *updateArgs) { u.ownerSubject = &s }
+}
+
 func WithJobName(s string) UpdateOption {
 	return func(u *updateArgs) { u.jobName = &s }
 }
@@ -315,14 +338,14 @@ func boolToInt(b bool) int {
 func scanRow(scan func(...any) error) (*Copy, error) {
 	var c Copy
 	var status string
-	var containerID, connectionString, runID, jobName, errorMessage sql.NullString
+	var containerID, connectionString, ownerSubject, runID, jobName, errorMessage sql.NullString
 	var createdAt string
 	var readyAt, destroyedAt sql.NullString
 	var warm int
 
 	err := scan(
 		&c.ID, &status, &c.Port,
-		&containerID, &connectionString,
+		&containerID, &connectionString, &ownerSubject,
 		&runID, &jobName, &errorMessage,
 		&createdAt, &readyAt, &destroyedAt, &c.TTLSeconds,
 		&warm,
@@ -333,6 +356,7 @@ func scanRow(scan func(...any) error) (*Copy, error) {
 	c.Status = CopyStatus(status)
 	c.ContainerID = containerID.String
 	c.ConnectionString = connectionString.String
+	c.OwnerSubject = ownerSubject.String
 	c.RunID = runID.String
 	c.JobName = jobName.String
 	c.ErrorMessage = errorMessage.String

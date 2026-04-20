@@ -4,6 +4,8 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	_ "modernc.org/sqlite"
 )
@@ -12,6 +14,15 @@ import (
 // pragmas, and runs all pending migrations. It must be called once at startup;
 // the returned *sql.DB is safe for concurrent use.
 func Open(path string) (*sql.DB, error) {
+	if path != "" && path != ":memory:" {
+		dir := filepath.Dir(path)
+		if dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				return nil, fmt.Errorf("store: mkdir %s: %w", dir, err)
+			}
+		}
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
@@ -88,6 +99,26 @@ var migrations = []string{
 	// v4: rename automation-tracking columns to generic names.
 	`ALTER TABLE copies RENAME COLUMN gha_run_id TO run_id`,
 	`ALTER TABLE copies RENAME COLUMN gha_job_name TO job_name`,
+
+	// v5: track copy ownership for remote API authorization.
+	`ALTER TABLE copies ADD COLUMN owner_subject TEXT NOT NULL DEFAULT ''`,
+	`CREATE INDEX IF NOT EXISTS idx_copies_owner ON copies(owner_subject)`,
+
+	// v6: enforce positive TTLs at the database layer.
+	`CREATE TRIGGER IF NOT EXISTS copies_ttl_positive_insert
+	BEFORE INSERT ON copies
+	FOR EACH ROW
+	WHEN NEW.ttl_seconds <= 0
+	BEGIN
+		SELECT RAISE(ABORT, 'ttl_seconds must be greater than zero');
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS copies_ttl_positive_update
+	BEFORE UPDATE OF ttl_seconds ON copies
+	FOR EACH ROW
+	WHEN NEW.ttl_seconds <= 0
+	BEGIN
+		SELECT RAISE(ABORT, 'ttl_seconds must be greater than zero');
+	END`,
 }
 
 // migrate applies any migrations that have not yet been recorded in

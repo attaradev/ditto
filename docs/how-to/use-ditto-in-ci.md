@@ -12,7 +12,7 @@ ditto copy run -- go test ./...
 
 Use `copy create` and `copy delete` when a job needs to hold a copy across multiple steps.
 
-Use `--server` when the CI runner should talk to a remote ditto host instead of running locally.
+Use `--server` when the CI runner should talk to a shared ditto host instead of running locally.
 
 ## Hold a copy across multiple steps
 
@@ -67,21 +67,18 @@ jobs:
         run: ditto copy delete "$COPY_ID"
 ```
 
-The repository also contains composite actions under `actions/create` and `actions/delete` if you
-want to vendor or pin them in your own workflows.
-
-## Use a remote ditto host from any CI system
+## Use a shared ditto host from any CI system
 
 On the host that owns the dump file and Docker runtime:
 
 ```bash
-ditto serve
+ditto host
 ```
 
 In the CI job:
 
 ```bash
-export DITTO_TOKEN=my-secret-token
+export DITTO_TOKEN="$(cat oidc.jwt)"
 COPY=$(ditto copy create --server=http://ditto.internal:8080 --format=json --ttl 1h)
 DATABASE_URL=$(echo "$COPY" | python3 -c "import sys, json; print(json.load(sys.stdin)['connection_string'])")
 COPY_ID=$(echo "$COPY" | python3 -c "import sys, json; print(json.load(sys.stdin)['id'])")
@@ -161,16 +158,18 @@ def test_my_feature(ditto_copy):
 Programmatic use:
 
 ```python
+import os
+
 from ditto import Client
 
-client = Client(server_url="http://ditto.internal:8080", token="secret")
+client = Client(server_url="http://ditto.internal:8080", token=os.environ["DITTO_TOKEN"])
 
 with client.with_copy() as dsn:
     run_migrations(dsn)
 ```
 
 The Python SDK reads `DITTO_SERVER_URL`, `DITTO_TOKEN`, and `DITTO_TTL` from the environment when
-they are present.
+they are present. In shared-host mode, `DITTO_TOKEN` is typically a short-lived OIDC JWT.
 
 ## Use the JavaScript / TypeScript SDK
 
@@ -197,4 +196,4 @@ await client.withCopy(async (dsn) => {
 ```
 
 The JavaScript SDK reads `DITTO_SERVER_URL`, `DITTO_TOKEN`, and `DITTO_TTL` from the environment
-when they are present.
+when they are present. In shared-host mode, `DITTO_TOKEN` is typically a short-lived OIDC JWT.

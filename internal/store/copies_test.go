@@ -119,3 +119,37 @@ func TestCopyListExpired(t *testing.T) {
 		t.Errorf("ListExpired: got %v, want [EXPIREDID]", expired)
 	}
 }
+
+func TestCopyCreateRejectsNegativeTTL(t *testing.T) {
+	cs := newTestDB(t)
+
+	err := cs.Create(&Copy{
+		ID:         "NEGTTL",
+		Status:     StatusPending,
+		TTLSeconds: -1,
+	})
+	if err == nil {
+		t.Fatal("Create: expected error for negative ttl")
+	}
+}
+
+func TestCopyListFiltersByOwner(t *testing.T) {
+	cs := newTestDB(t)
+
+	for _, copyRecord := range []*Copy{
+		{ID: "copy-owner-1", Status: StatusReady, OwnerSubject: "user-1", TTLSeconds: 3600},
+		{ID: "copy-owner-2", Status: StatusReady, OwnerSubject: "user-2", TTLSeconds: 3600},
+	} {
+		if err := cs.Create(copyRecord); err != nil {
+			t.Fatalf("Create(%s): %v", copyRecord.ID, err)
+		}
+	}
+
+	copies, err := cs.List(ListFilter{OwnerSubject: "user-1"})
+	if err != nil {
+		t.Fatalf("List(owner): %v", err)
+	}
+	if len(copies) != 1 || copies[0].ID != "copy-owner-1" {
+		t.Fatalf("List(owner): got %+v", copies)
+	}
+}
