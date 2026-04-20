@@ -4,9 +4,10 @@ go 1.26
 
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.27.0
-	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.29.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.98.0
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.29.0
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/containerd/errdefs v1.0.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/docker/go-connections v0.6.0
 	github.com/go-sql-driver/mysql v1.9.3
@@ -44,7 +45,6 @@ require (
 	github.com/charmbracelet/x/ansi v0.8.0 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.13-0.20250311204145-2c3ea96c31dd // indirect
 	github.com/charmbracelet/x/term v0.2.1 // indirect
-	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
