@@ -11,7 +11,17 @@ Prerequisites:
 - a Docker-compatible runtime running locally
 - a source database reachable from that runtime
 
-Create `~/.ditto/ditto.yaml`:
+You can generate a starter config from your source URL, or create it manually.
+
+**Option A — generate with `ditto init`:**
+
+```bash
+export DITTO_SOURCE_URL='postgres://ditto_dump:secret@db.example.com:5432/myapp'
+ditto init --output ~/.ditto/ditto.yaml
+# then edit ~/.ditto/ditto.yaml to fill in credentials and obfuscation rules
+```
+
+**Option B — create manually.** Create `~/.ditto/ditto.yaml`:
 
 ```yaml
 source:
@@ -23,12 +33,20 @@ source:
   password_secret: env:DB_PASSWORD
 
 dump:
-  path: ~/.ditto/latest.gz
   schedule: "0 * * * *"
 
 copy_ttl_seconds: 14400
 port_pool_start: 5433
 port_pool_end: 5450
+```
+
+Leave `dump.path` unset to use ditto's built-in default. If you set it in `ditto.yaml`, use an
+absolute path; `~` is not expanded inside YAML values.
+
+After writing the config, verify it:
+
+```bash
+ditto doctor
 ```
 
 If the source contains sensitive data, configure obfuscation before you distribute or reuse the dump.
@@ -130,14 +148,18 @@ ditto reseed
 aws s3 cp ~/.ditto/latest.gz s3://your-bucket/ditto/latest.gz
 ```
 
-Developers can then download the dump locally and continue using `copy create`, `copy run`, and
-`env export`.
+Developers can restore directly from that URI in local mode:
+
+```bash
+ditto copy run --dump s3://your-bucket/ditto/latest.gz -- go test ./...
+ditto copy create --dump https://example.com/ditto/latest.gz
+```
 
 If you want developers to avoid local Docker entirely, run `ditto host` on a shared host and point
 their commands at it:
 
 ```bash
-export DITTO_TOKEN="$(cat oidc.jwt)"
+export DITTO_TOKEN="$DITTO_STATIC_TOKEN"    # or: export DITTO_TOKEN="$(cat oidc.jwt)"
 ditto copy run --server=http://ditto.internal:8080 -- go test ./...
 ```
 

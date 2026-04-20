@@ -23,9 +23,9 @@ Subcommands:
   ditto env destroy <id>   Destroy a copy created by export
 
 Shell session workflow:
-  eval $(ditto env export)         # creates a copy; sets DATABASE_URL + DITTO_COPY_ID
-  psql $DATABASE_URL               # use the copy from any tool
-  ditto env destroy $DITTO_COPY_ID # clean up when done`,
+  eval "$(ditto env export)"         # creates a copy; sets DATABASE_URL + DITTO_COPY_ID
+  psql "$DATABASE_URL"               # use the copy from any tool
+  ditto env destroy "$DITTO_COPY_ID" # clean up when done`,
 	}
 
 	cmd.PersistentFlags().StringVar(&serverURL, "server", "",
@@ -81,7 +81,7 @@ func newEnvRunCmd() *cobra.Command {
 // newEnvExportCmd: ditto env export
 // Creates a copy and prints eval-able shell export lines. Intended use:
 //
-//	eval $(ditto env export)
+//	eval "$(ditto env export)"
 func newEnvExportCmd() *cobra.Command {
 	var (
 		ttl   string
@@ -94,11 +94,11 @@ func newEnvExportCmd() *cobra.Command {
 		Long: `Create an ephemeral database copy and print shell-eval-able export lines.
 
 Usage:
-  eval $(ditto env export)
+  eval "$(ditto env export)"
 
 After eval, DATABASE_URL and DITTO_COPY_ID are set in the current shell.
 Destroy the copy when you are done:
-  ditto env destroy $DITTO_COPY_ID`,
+  ditto env destroy "$DITTO_COPY_ID"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runEnvExport(cmd, ttl, label)
 		},

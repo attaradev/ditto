@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -16,6 +17,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
+
+// isLocalFilePath returns true when s looks like a filesystem path rather than
+// a URI. A path starts with /, ./, ../, ~/, or contains no URI scheme at all.
+func isLocalFilePath(s string) bool {
+	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") ||
+		strings.HasPrefix(s, "../") || strings.HasPrefix(s, "~/") {
+		return true
+	}
+	// No scheme separator means it cannot be a URI.
+	return !strings.Contains(s, "://")
+}
 
 // copyClientFromContext returns an HTTPClient when --server is set, or the
 // local Manager otherwise. This makes copy commands transparent to whether
@@ -96,6 +108,9 @@ func runCopyCreate(cmd *cobra.Command, ttl, label, format, dumpURI string, obfus
 	}
 	if dumpURI != "" {
 		if serverURLFromContext(cmd) != "" {
+			if isLocalFilePath(dumpURI) {
+				return fmt.Errorf("--dump with a local path is not supported in remote mode; use a URI (s3://, https://) or omit the flag to use the host's configured dump")
+			}
 			opts.DumpURI = dumpURI
 		} else {
 			localPath, cleanup, err := dumpfetch.Fetch(cmd.Context(), dumpURI)
@@ -233,6 +248,9 @@ func runCopyExec(cmd *cobra.Command, ttl, label, dumpURI string, obfuscate bool,
 	}
 	if dumpURI != "" {
 		if serverURLFromContext(cmd) != "" {
+			if isLocalFilePath(dumpURI) {
+				return fmt.Errorf("--dump with a local path is not supported in remote mode; use a URI (s3://, https://) or omit the flag to use the host's configured dump")
+			}
 			opts.DumpURI = dumpURI
 		} else {
 			localPath, cleanup, err := dumpfetch.Fetch(ctx, dumpURI)

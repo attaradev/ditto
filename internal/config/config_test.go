@@ -271,9 +271,7 @@ server:
 		"server.advertise_host",
 		"server.db_bind_host",
 		"server.copy_secret_secret",
-		"server.auth.issuer",
-		"server.auth.audience",
-		"server.auth.jwks_url",
+		"server.auth.static_token or server.auth.issuer+audience+jwks_url",
 		"server.db_tls.cert_file",
 		"server.db_tls.key_file",
 	) {

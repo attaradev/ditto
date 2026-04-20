@@ -90,7 +90,7 @@ then destroy the copy when the command exits — regardless of exit code.
 The copy lifecycle is fully automatic:
 
   ditto copy run -- go test ./...
-  ditto copy run --ttl 30m -- migrate -database "$DATABASE_URL" up
+  ditto copy run --ttl 30m -- sh -c 'migrate -database "$DATABASE_URL" up'
   ditto copy run --server=http://ditto.internal:8080 -- pytest tests/
   ditto copy run --dump s3://my-bucket/latest.gz -- go test ./...
 

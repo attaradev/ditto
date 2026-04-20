@@ -119,20 +119,28 @@ If your source host is `localhost`, `127.0.0.1`, or `::1`, this quickstart will 
 run inside containers, so the source must be reachable from the Docker runtime by hostname or
 network address.
 
-After installation, the shortest working path is four commands:
+The fastest path uses only environment variables — no config file required:
 
 ```bash
 export DITTO_SOURCE_URL='postgres://ditto_dump:secret@db.example.com:5432/myapp'
-export DITTO_DUMP_PATH="$PWD/.ditto/latest.gz"
-ditto reseed
-ditto copy run -- env | grep '^DATABASE_URL='
+ditto doctor                                           # verify Docker, config, and connectivity
+ditto reseed                                           # write the first dump
+ditto copy run -- env | grep '^DATABASE_URL='         # prove it works
 ```
 
 What you should see:
 
-- `ditto reseed` completes without replacing the previous dump on failure
+- `ditto doctor` prints a green checklist; fix any red items before continuing
+- `ditto reseed` completes and writes a dump to `~/.ditto/latest.gz`
 - `ditto copy run` prints a `DATABASE_URL=...` line, proving the copy was created and injected
 - the copy is destroyed automatically when the command exits
+
+To generate a starter `ditto.yaml` instead of using environment variables:
+
+```bash
+ditto init        # writes ditto.yaml pre-populated from DITTO_SOURCE_URL
+ditto doctor      # re-verify with the file-based config
+```
 
 Useful next commands:
 
@@ -142,15 +150,17 @@ ditto erd --output schema.mmd
 ditto copy run -- go test ./...
 ```
 
-For a repeatable file-based setup, move the environment variables into `ditto.yaml`. See
-[Run Your First Copy](docs/tutorials/run-your-first-copy.md) and
-[Configuration Reference](docs/reference/configuration.md).
+See [Run Your First Copy](docs/tutorials/run-your-first-copy.md) and
+[Configuration Reference](docs/reference/configuration.md) for the full setup.
 
 ## Common workflows
 
 | Task | Command |
 | --- | --- |
+| Diagnose setup problems | `ditto doctor` |
+| Generate a starter config | `ditto init` |
 | Run one command against a throwaway copy | `ditto copy run -- go test ./...` |
+| Dry-run a migration | `ditto copy run -- alembic upgrade head` |
 | Start a shell session with a persistent copy | `eval "$(ditto env export)"` |
 | Generate an ERD from a copy | `ditto erd --output schema.mmd` |
 | Hold a copy across CI steps | `ditto copy create --format=json` and later `ditto copy delete <id>` |

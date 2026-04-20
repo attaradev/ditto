@@ -41,7 +41,11 @@ dump:
 
   # Local path where the compressed dump file is stored.
   # The scheduler writes to <path>.tmp then atomically renames to <path>.
-  path: /data/dump/latest.gz
+  # Leave this unset to use ditto's built-in default. If you set it explicitly,
+  # use an absolute path; "~" is not expanded inside YAML values.
+  # Default for local use: your home directory's .ditto/latest.gz
+  # Default in server context: /data/dump/latest.gz
+  # path: /absolute/path/to/latest.gz
 
   # Warn (but don't error) if the dump file is older than this many seconds.
   # Default: 7200 (2 × the default hourly schedule).
@@ -61,6 +65,12 @@ dump:
   #   - CI schema checks that don't need production data
   # Leave empty (default) to skip the schema-only dump.
   # schema_path: /data/dump/schema.gz
+
+  # Alert when a scheduled dump fails. Either webhook_url or exec may be set;
+  # webhook_url takes precedence. Both are optional.
+  # on_failure:
+  #   webhook_url: "https://hooks.slack.com/services/..."
+  #   exec: "echo 'dump failed' | mail ops@example.com"
 
 # Auto-destroy copies older than this many seconds.
 # Individual copies can override this with --ttl on copy create.
@@ -85,8 +95,9 @@ port_pool_end: 5600
 # 0 (default) disables the pool. A value of 2–3 covers most CI parallelism.
 # warm_pool_size: 3
 
-# PII obfuscation rules applied after every dump restore.
-# Scrub sensitive columns before the copy is handed to the caller.
+# PII obfuscation rules baked into the dump during `ditto reseed`.
+# That keeps later copies scrubbed by default. `copy create --dump ... --obfuscate`
+# and `copy run --dump ... --obfuscate` can also apply the same rules after restore.
 #
 # Strategies:
 #   replace  — deterministic format-preserving substitution (recommended for most PII)
@@ -125,20 +136,36 @@ port_pool_end: 5600
 #       strategy: mask
 #       keep_last: 4          # ************1234
 #       mask_char: "*"
+#     - table: audit_logs
+#       column: ip_address
+#       strategy: replace
+#       type: ip
+#       warn_only: true       # 0-row match emits a warning instead of failing the dump
 
 # Shared-host settings (used by ditto host).
 # server:
 #   enabled: true
 #   addr: ":8080"
-#   advertise_host: ditto.internal
+#   advertise_host: ditto.internal      # DNS name reachable from CI runners
 #   db_bind_host: 0.0.0.0
 #   copy_secret_secret: env:DITTO_COPY_SECRET
+#
+#   # Authentication:
+#   # - If static_token is set, ditto uses it and ignores the OIDC fields below.
+#   # - For production, omit static_token and configure the full OIDC block.
 #   auth:
-#     issuer: https://issuer.example.com/
-#     audience: ditto-ci
-#     jwks_url: https://issuer.example.com/.well-known/jwks.json
-#     admin_claim: role
-#     admin_value: ditto-admin
+#     # Option A — shared secret. All requests share one identity.
+#     # Use for evaluation and single-operator setups only.
+#     static_token: env:DITTO_STATIC_TOKEN
+#
+#     # Option B — OIDC bearer-token validation (recommended for production).
+#     # issuer: https://issuer.example.com/
+#     # audience: ditto-ci
+#     # jwks_url: https://issuer.example.com/.well-known/jwks.json
+#     # admin_claim: role
+#     # admin_value: ditto-admin
+#
 #   db_tls:
+#     # Required in current shared-host mode.
 #     cert_file: /etc/ditto/tls/server.crt
 #     key_file: /etc/ditto/tls/server.key

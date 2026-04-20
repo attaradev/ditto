@@ -15,6 +15,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/attaradev/ditto/internal/config"
@@ -60,9 +61,18 @@ func (o *Obfuscator) Apply(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("obfuscation: build SQL for %s.%s: %w", rule.Table, rule.Column, err)
 		}
-		if _, err := db.ExecContext(ctx, stmt, args...); err != nil {
+		result, err := db.ExecContext(ctx, stmt, args...)
+		if err != nil {
 			return fmt.Errorf("obfuscation: apply %s on %s.%s: %w",
 				rule.Strategy, rule.Table, rule.Column, err)
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			msg := fmt.Sprintf("obfuscation: rule %s.%s matched 0 rows — verify table and column names exist in source schema", rule.Table, rule.Column)
+			if rule.WarnOnly {
+				slog.Warn(msg)
+			} else {
+				return fmt.Errorf("%s", msg)
+			}
 		}
 	}
 	return nil

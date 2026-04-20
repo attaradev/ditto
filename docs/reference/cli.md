@@ -12,7 +12,7 @@ Global flags:
 
 | Flag | Meaning |
 | --- | --- |
-| `--config <path>` | Path to `ditto.yaml` |
+| `--config <path>` | Path to `ditto.yaml`. If omitted, ditto searches `./ditto.yaml`, `~/.ditto/ditto.yaml`, then `/etc/ditto/ditto.yaml`. |
 | `--db <path>` | Path to the SQLite metadata database |
 | `--version` | Print version information |
 
@@ -32,7 +32,7 @@ Flags:
 
 | Flag | Meaning |
 | --- | --- |
-| `--dump <uri>` | Restore from a local path, `s3://`, or `https://` source; with `--server`, the host resolves it |
+| `--dump <uri>` | Restore from a local path, `s3://`, or `https://` source. In remote mode (`--server`), local filesystem paths are rejected — use a URI. |
 | `--format <mode>` | Output style: `auto`, `pipe`, or `json` |
 | `--label <name>` | Run identifier override |
 | `--obfuscate` | Apply configured obfuscation post-restore |
@@ -45,8 +45,10 @@ Create a copy, run one command with `DATABASE_URL` injected, and destroy the cop
 
 ```bash
 ditto copy run -- go test ./...
-ditto copy run --ttl 30m -- migrate -database "$DATABASE_URL" up
+ditto copy run --ttl 30m -- sh -c 'migrate -database "$DATABASE_URL" up'
 ```
+
+If the child command needs shell expansion, invoke a shell explicitly as in the second example.
 
 Injected environment variables:
 
@@ -57,7 +59,7 @@ Flags:
 
 | Flag | Meaning |
 | --- | --- |
-| `--dump <uri>` | Restore from a specific dump source |
+| `--dump <uri>` | Restore from a specific source. In remote mode (`--server`), must be a URI (`s3://`, `https://`), not a local path. |
 | `--label <name>` | Run identifier override |
 | `--obfuscate` | Apply configured obfuscation post-restore |
 | `--ttl <duration>` | Override lifetime for this copy |
@@ -99,6 +101,42 @@ Responsibilities:
 - recover stuck copies and orphan containers on startup
 - serve the authenticated `/v2` API for remote callers
 
+## `ditto doctor`
+
+Check that all prerequisites are satisfied before running other commands:
+
+```bash
+ditto doctor
+```
+
+Verifies:
+
+- Docker daemon is reachable
+- Configuration is loaded and source fields are present
+- Dump file exists and is not stale
+- Source database is reachable (TCP + query)
+- OIDC JWKS endpoint is reachable (when `server.auth` is configured)
+
+Prints a green/red checklist and exits non-zero if any check fails. Run this first when something is not working.
+
+## `ditto init`
+
+Generate a starter `ditto.yaml` in the current directory:
+
+```bash
+ditto init
+ditto init --output ~/.ditto/ditto.yaml
+```
+
+If `DITTO_SOURCE_URL` is set, source fields are pre-populated from it. Obfuscation rule stubs are
+included as comments. After editing, verify the result with `ditto doctor`.
+
+Flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--output <path>` | Write path (default: `ditto.yaml` in the current directory) |
+
 ## `ditto status`
 
 Show dump freshness and copy capacity:
@@ -107,7 +145,7 @@ Show dump freshness and copy capacity:
 ditto status
 ```
 
-This is the first command to run when you want to verify host health.
+Use `ditto doctor` for a deeper diagnostic that includes source connectivity and OIDC checks.
 
 ## `ditto env`
 

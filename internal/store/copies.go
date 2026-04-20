@@ -184,7 +184,7 @@ func (s *CopyStore) ListExpired() ([]*Copy, error) {
 		FROM copies
 		WHERE status IN (?, ?)
 		  AND warm = 0
-		  AND datetime(created_at, '+' || ttl_seconds || ' seconds') < datetime('now')
+		  AND datetime(COALESCE(ready_at, created_at), '+' || ttl_seconds || ' seconds') < datetime('now')
 		ORDER BY created_at ASC`,
 		string(StatusReady), string(StatusInUse))
 	if err != nil {

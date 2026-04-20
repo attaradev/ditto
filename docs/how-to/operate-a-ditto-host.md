@@ -41,18 +41,26 @@ server:
   db_bind_host: 0.0.0.0
   copy_secret_secret: env:DITTO_COPY_SECRET
   auth:
-    issuer: https://issuer.example.com/
-    audience: ditto-ci
-    jwks_url: https://issuer.example.com/.well-known/jwks.json
-    admin_claim: role
-    admin_value: ditto-admin
+    # Option A — simple shared secret (evaluation and single-operator use).
+    # If static_token is set, ditto uses it and ignores the OIDC fields below.
+    static_token: env:DITTO_STATIC_TOKEN
+    # Option B — OIDC (recommended for production multi-user environments).
+    # Remove static_token when you switch to OIDC.
+    # issuer: https://issuer.example.com/
+    # audience: ditto-ci
+    # jwks_url: https://issuer.example.com/.well-known/jwks.json
+    # admin_claim: role
+    # admin_value: ditto-admin
   db_tls:
+    # Required in current shared-host mode.
     cert_file: /etc/ditto/tls/server.crt
     key_file: /etc/ditto/tls/server.key
 ```
 
-Use secret references instead of inline plaintext for long-lived hosts, and provision a certificate
-whose subject matches `server.advertise_host`. See
+Use secret references instead of inline plaintext for long-lived hosts. In the current
+implementation, shared-host mode also requires `server.db_tls.cert_file` and
+`server.db_tls.key_file`, so provision a certificate whose subject matches `server.advertise_host`.
+See
 [Configuration reference](../reference/configuration.md#secret-references).
 
 ## Run the controller
@@ -89,15 +97,23 @@ If you only need scheduled dump refreshes and not automatic copy cleanup, a cron
 0 * * * * /usr/local/bin/ditto reseed >> /var/log/ditto-reseed.log 2>&1
 ```
 
-Clients then use bearer tokens from their identity provider or CI platform:
+Clients supply the token via `DITTO_TOKEN`:
 
 ```bash
+# Static token mode
+export DITTO_TOKEN="$DITTO_STATIC_TOKEN"
+ditto copy create --server=http://ditto.internal:8080
+
+# OIDC mode (production)
 export DITTO_TOKEN="$(cat oidc.jwt)"
 ditto copy create --server=http://ditto.internal:8080
 ```
 
 Protect the service with network policy appropriate to the published DB ports. See
 [SECURITY.md](../../SECURITY.md).
+
+Non-admin callers can list and destroy only their own copies. The shared-host `/v2/status` endpoint
+requires an admin-capable token.
 
 ## Runner setup
 
@@ -136,7 +152,8 @@ FLUSH PRIVILEGES;
 These commands cover most operator checks:
 
 ```bash
-ditto status
+ditto doctor          # full diagnostic: Docker, config, dump freshness, source DB, OIDC
+ditto status          # quick capacity and dump age summary
 ditto copy list
 ditto copy logs <id>
 ```

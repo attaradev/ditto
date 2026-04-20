@@ -255,7 +255,7 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 		return nil, err
 	}
 
-	port, err := m.ports.Allocate()
+	port, err := m.ports.AllocateWithTimeout(ctx, 60*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("copy.Create: %w", err)
 	}

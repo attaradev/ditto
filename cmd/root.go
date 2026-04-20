@@ -49,7 +49,7 @@ Use it when shared staging databases make test runs flaky, schema fidelity matte
 	}
 
 	root.PersistentFlags().StringVar(&dbPath, "db", defaultDBPath(), "Path to the ditto SQLite metadata database")
-	root.PersistentFlags().StringVar(&cfgPath, "config", "", "Path to ditto.yaml (defaults to ./ditto.yaml)")
+	root.PersistentFlags().StringVar(&cfgPath, "config", "", "Path to ditto.yaml (otherwise search ./ditto.yaml, ~/.ditto/ditto.yaml, /etc/ditto/ditto.yaml)")
 
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		// Skip for help/completion.
@@ -115,6 +115,8 @@ Use it when shared staging databases make test runs flaky, schema fidelity matte
 		newHostCmd(),
 		newErdCmd(),
 		newEnvCmd(),
+		newDoctorCmd(),
+		newInitCmd(),
 	)
 	return root
 }
@@ -133,6 +135,10 @@ func managerFromContext(cmd *cobra.Command) *copypkg.Manager {
 	v := cmd.Context().Value(keyManager)
 	if v == nil {
 		fmt.Fprintln(os.Stderr, "error:", localInitError(cmd))
+		fmt.Fprintln(os.Stderr, "\nQuick fixes:")
+		fmt.Fprintln(os.Stderr, "  • Set DITTO_SOURCE_URL=<connection-string> (and DITTO_DUMP_PATH only if you want a non-default dump path)")
+		fmt.Fprintln(os.Stderr, "  • Or run: ditto init   (generates ./ditto.yaml from your source DB)")
+		fmt.Fprintln(os.Stderr, "  • Or run: ditto doctor (diagnoses config, Docker, and dump issues)")
 		os.Exit(1)
 	}
 	return v.(*copypkg.Manager)
@@ -142,6 +148,10 @@ func schedulerFromContext(cmd *cobra.Command) *dumppkg.Scheduler {
 	v := cmd.Context().Value(keyScheduler)
 	if v == nil {
 		fmt.Fprintln(os.Stderr, "error:", localInitError(cmd))
+		fmt.Fprintln(os.Stderr, "\nQuick fixes:")
+		fmt.Fprintln(os.Stderr, "  • Set DITTO_SOURCE_URL=<connection-string> (and DITTO_DUMP_PATH only if you want a non-default dump path)")
+		fmt.Fprintln(os.Stderr, "  • Or run: ditto init   (generates ./ditto.yaml from your source DB)")
+		fmt.Fprintln(os.Stderr, "  • Or run: ditto doctor (diagnoses config, Docker, and dump issues)")
 		os.Exit(1)
 	}
 	return v.(*dumppkg.Scheduler)

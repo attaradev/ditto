@@ -42,11 +42,26 @@ Use environment variables for the first run so you do not have to write a config
 
 ```bash
 export DITTO_SOURCE_URL='postgres://ditto_dump:secret@db.example.com:5432/myapp'
-export DITTO_DUMP_PATH="$PWD/.ditto/latest.gz"
 ```
 
 If you are using MySQL or MariaDB, use a URL such as
 `mysql://ditto_dump:secret@db.example.com:3306/myapp`.
+
+Alternatively, generate a `ditto.yaml` from the URL and edit it:
+
+```bash
+ditto init
+# edit ditto.yaml to add obfuscation rules and adjust any settings
+```
+
+## 2.5. Verify your setup
+
+```bash
+ditto doctor
+```
+
+This checks Docker reachability, configuration completeness, and source database connectivity. Fix
+any red items before continuing.
 
 ## 3. Create the first dump
 
@@ -54,8 +69,9 @@ If you are using MySQL or MariaDB, use a URL such as
 ditto reseed
 ```
 
-This creates the compressed dump at `"$PWD/.ditto/latest.gz"` and only replaces the previous dump
-after a successful refresh.
+This writes the compressed dump to your configured dump path and only replaces the previous dump
+after a successful refresh. If you did not set `dump.path`, ditto uses its built-in default under
+your home directory.
 
 ## 4. Run one command against a fresh copy
 

@@ -80,13 +80,24 @@ func runHost(cmd *cobra.Command) error {
 	}
 	sched := dumppkg.New(cfg, eng, es, docker)
 
-	authn := oidc.New(oidc.Config{
-		Issuer:     cfg.Server.Auth.Issuer,
-		Audience:   cfg.Server.Auth.Audience,
-		JWKSURL:    cfg.Server.Auth.JWKSURL,
-		AdminClaim: cfg.Server.Auth.AdminClaim,
-		AdminValue: cfg.Server.Auth.AdminValue,
-	})
+	var authn server.Authenticator
+	if cfg.Server.Auth.StaticToken != "" {
+		var sc secret.Cache
+		tok, err := sc.Resolve(ctx, cfg.Server.Auth.StaticToken, "")
+		if err != nil {
+			return fmt.Errorf("host: resolve static token: %w", err)
+		}
+		slog.Warn("host: static token auth enabled — suitable for evaluation only; configure OIDC for production")
+		authn = oidc.NewStaticToken(tok)
+	} else {
+		authn = oidc.New(oidc.Config{
+			Issuer:     cfg.Server.Auth.Issuer,
+			Audience:   cfg.Server.Auth.Audience,
+			JWKSURL:    cfg.Server.Auth.JWKSURL,
+			AdminClaim: cfg.Server.Auth.AdminClaim,
+			AdminValue: cfg.Server.Auth.AdminValue,
+		})
+	}
 
 	slog.Info("host: recovering orphans")
 	if err := mgr.RecoverOrphans(ctx); err != nil {

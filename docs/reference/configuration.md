@@ -17,10 +17,15 @@ DITTO_SOURCE_HOST=db.staging.example.com ditto copy create
 
 ## Smallest environment-only setup
 
-If you do not want a config file yet, these environment variables are enough to run locally:
+If you do not want a config file yet, this is enough to get started locally:
 
 ```bash
 export DITTO_SOURCE_URL='postgres://ditto_dump:secret@db.example.com:5432/myapp'
+```
+
+Add `DITTO_DUMP_PATH` only if you want a non-default dump location:
+
+```bash
 export DITTO_DUMP_PATH="$PWD/.ditto/latest.gz"
 ```
 
@@ -38,12 +43,15 @@ source:
   password_secret: env:DB_PASSWORD
 
 dump:
-  path: /data/dump/latest.gz
+  schedule: "0 * * * *"
 
 copy_ttl_seconds: 7200
 port_pool_start: 5433
 port_pool_end: 5600
 ```
+
+If you omit `dump.path`, ditto uses its built-in default dump path. If you set `dump.path` in
+YAML, use an absolute path. `~` is not expanded inside config values.
 
 ## `source`
 
@@ -81,7 +89,7 @@ If you do not use `source.url`, these fields are required:
 
 ### Secret references
 
-`source.password_secret` and `server.copy_secret_secret` support:
+`source.password_secret`, `server.copy_secret_secret`, and `server.auth.static_token` support:
 
 | Format | Backend |
 | --- | --- |
@@ -101,21 +109,46 @@ source:
 ```yaml
 dump:
   schedule: "0 * * * *"
-  path: /data/dump/latest.gz
+  path: /absolute/path/to/latest.gz
   stale_threshold: 7200
   client_image: ""
   schema_path: ""
+  on_failure:
+    webhook_url: ""
+    exec: ""
 ```
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `dump.schedule` | hourly | Cron schedule used by `ditto host` |
-| `dump.path` | `/data/dump/latest.gz` | Local path for the compressed dump |
+| `dump.path` | built-in default: home-directory `.ditto/latest.gz` locally, otherwise `/data/dump/latest.gz` | Path for the compressed dump. If you set it explicitly in YAML, use an absolute path; `~` is not expanded. |
 | `dump.stale_threshold` | `7200` | Freshness budget in seconds; staleness warnings appear once the file is roughly 2x older than this |
 | `dump.client_image` | engine default | Optional helper image for dump operations |
 | `dump.schema_path` | empty | Optional path for a DDL-only dump alongside the full dump |
+| `dump.on_failure.webhook_url` | empty | HTTP endpoint to POST a JSON failure payload when a scheduled dump fails |
+| `dump.on_failure.exec` | empty | Shell command to run when a scheduled dump fails (`webhook_url` takes precedence) |
 
 The scheduler writes to `<path>.tmp` and then atomically renames the file into place.
+
+### Dump failure alerts
+
+When a scheduled dump fails, ditto can notify you immediately instead of silently serving stale data:
+
+```yaml
+dump:
+  on_failure:
+    webhook_url: https://hooks.slack.com/services/...
+```
+
+Or run an arbitrary command:
+
+```yaml
+dump:
+  on_failure:
+    exec: "echo 'dump failed' | mail ops@example.com"
+```
+
+The JSON payload posted to `webhook_url` includes `error`, `timestamp`, `last_dump_age`, and `dump_path`.
 
 ## Copy lifecycle settings
 
@@ -140,12 +173,18 @@ server:
   db_bind_host: 0.0.0.0
   copy_secret_secret: env:DITTO_COPY_SECRET
   auth:
-    issuer: https://issuer.example.com/
-    audience: ditto-ci
-    jwks_url: https://issuer.example.com/.well-known/jwks.json
-    admin_claim: role
-    admin_value: ditto-admin
+    # Option A — simple shared secret (evaluation and single-operator setups).
+    # If static_token is set, ditto uses it and ignores the OIDC fields below.
+    static_token: env:DITTO_STATIC_TOKEN
+    # Option B — OIDC (recommended for production multi-user environments).
+    # Remove static_token when you switch to OIDC.
+    # issuer: https://issuer.example.com/
+    # audience: ditto-ci
+    # jwks_url: https://issuer.example.com/.well-known/jwks.json
+    # admin_claim: role
+    # admin_value: ditto-admin
   db_tls:
+    # Required in current shared-host mode.
     cert_file: /etc/ditto/tls/server.crt
     key_file: /etc/ditto/tls/server.key
 ```
@@ -157,17 +196,30 @@ server:
 | `server.advertise_host` | empty | Hostname or address returned in remote copy DSNs |
 | `server.db_bind_host` | empty | Interface used when publishing copy container ports |
 | `server.copy_secret_secret` | empty | Secret reference used to derive per-copy database credentials |
-| `server.auth.issuer` | empty | Expected JWT issuer for bearer-token validation |
-| `server.auth.audience` | empty | Expected JWT audience for bearer-token validation |
+| `server.auth.static_token` | empty | Single shared secret; all requests share one identity. Accepts secret references. Use for evaluation only. |
+| `server.auth.issuer` | empty | Expected JWT issuer for OIDC bearer-token validation |
+| `server.auth.audience` | empty | Expected JWT audience for OIDC bearer-token validation |
 | `server.auth.jwks_url` | empty | JWKS endpoint used to fetch signing keys |
-| `server.auth.admin_claim` | empty | Optional JWT claim used to recognize admin callers |
+| `server.auth.admin_claim` | empty | Optional JWT claim name used to recognize admin callers |
 | `server.auth.admin_value` | empty | Required value for `server.auth.admin_claim` |
-| `server.db_tls.cert_file` | empty | Certificate mounted into remote copy containers |
-| `server.db_tls.key_file` | empty | Private key mounted into remote copy containers |
+| `server.db_tls.cert_file` | empty | Certificate mounted into remote copy containers. Required when `server.enabled` is true in the current implementation. |
+| `server.db_tls.key_file` | empty | Private key mounted into remote copy containers. Required when `server.enabled` is true in the current implementation. |
 
-`ditto host` requires the full `server.*` block above. Clients present bearer tokens through
-`DITTO_TOKEN`; in production those are typically short-lived OIDC JWTs issued by the CI platform or
-identity provider in front of ditto.
+`ditto host` requires `server.copy_secret_secret`, both `server.db_tls` files, and one auth mode.
+If `server.auth.static_token` is set, ditto uses static-token auth. Otherwise it expects the full
+OIDC block (`issuer` + `audience` + `jwks_url`). For production, omit `static_token` and configure
+OIDC only.
+
+Clients supply the token via `DITTO_TOKEN`:
+
+```bash
+export DITTO_TOKEN=my-static-secret            # static token mode
+export DITTO_TOKEN="$(cat oidc.jwt)"           # OIDC mode
+ditto copy create --server=http://ditto.internal:8080
+```
+
+When static token mode is active, `ditto host` emits a warning on every authenticated request as a
+reminder to migrate to OIDC before production use.
 
 ## Obfuscation
 
@@ -190,7 +242,19 @@ obfuscation:
       strategy: mask
       keep_last: 4
       mask_char: "*"
+    - table: audit_logs
+      column: ip_address
+      strategy: replace
+      type: ip
+      warn_only: true   # 0-row match emits a warning instead of failing the dump
 ```
+
+ditto validates referenced columns against the source schema before starting a dump. If a rule
+references a table or column that does not exist, the dump fails with a clear error naming the
+missing field.
+
+During obfuscation, a rule that updates 0 rows also fails by default. Set `warn_only: true` only to
+downgrade that zero-row case to a warning. It does not bypass missing table or column checks.
 
 Supported strategies:
 

@@ -4,11 +4,21 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/viper"
 )
+
+// defaultDumpFilePath returns ~/.ditto/latest.gz for local use, falling back to
+// /data/dump/latest.gz when the home directory cannot be determined (server context).
+func defaultDumpFilePath() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return home + "/.ditto/latest.gz"
+	}
+	return "/data/dump/latest.gz"
+}
 
 // Config is the top-level configuration structure, mirroring ditto.yaml.
 type Config struct {
@@ -36,13 +46,16 @@ type ServerConfig struct {
 	DBTLS            ServerDBTLS      `mapstructure:"db_tls"`
 }
 
-// ServerAuthConfig holds OIDC validation settings for ditto host.
+// ServerAuthConfig holds authentication settings for ditto host.
+// Either StaticToken (simple shared secret) or OIDC fields must be set.
+// StaticToken is for evaluation and single-operator use; prefer OIDC in production.
 type ServerAuthConfig struct {
-	Issuer     string `mapstructure:"issuer"`
-	Audience   string `mapstructure:"audience"`
-	JWKSURL    string `mapstructure:"jwks_url"`
-	AdminClaim string `mapstructure:"admin_claim"`
-	AdminValue string `mapstructure:"admin_value"`
+	StaticToken string `mapstructure:"static_token"` // secret reference: env:VAR, file:/path, or literal
+	Issuer      string `mapstructure:"issuer"`
+	Audience    string `mapstructure:"audience"`
+	JWKSURL     string `mapstructure:"jwks_url"`
+	AdminClaim  string `mapstructure:"admin_claim"`
+	AdminValue  string `mapstructure:"admin_value"`
 }
 
 // ServerDBTLS holds the TLS certificate material mounted into remote copy containers.
@@ -78,15 +91,24 @@ type ObfuscationRule struct {
 	MaskChar string `mapstructure:"mask_char"` // mask: character to use (default "*")
 	KeepLast int    `mapstructure:"keep_last"` // mask: preserve trailing N characters
 	Type     string `mapstructure:"type"`      // replace: data type — email | name | phone | ip | url | uuid
+	WarnOnly bool   `mapstructure:"warn_only"` // if true, 0-row updates emit a warning instead of an error
 }
 
 // Dump controls the dump scheduler.
 type Dump struct {
-	Schedule       string `mapstructure:"schedule"`
-	Path           string `mapstructure:"path"`
-	SchemaPath     string `mapstructure:"schema_path"`     // optional: path for a schema-only (DDL) dump; empty = disabled
-	StaleThreshold int    `mapstructure:"stale_threshold"` // seconds
-	ClientImage    string `mapstructure:"client_image"`    // optional helper image override for dump operations
+	Schedule       string        `mapstructure:"schedule"`
+	Path           string        `mapstructure:"path"`
+	SchemaPath     string        `mapstructure:"schema_path"`     // optional: path for a schema-only (DDL) dump; empty = disabled
+	StaleThreshold int           `mapstructure:"stale_threshold"` // seconds
+	ClientImage    string        `mapstructure:"client_image"`    // optional helper image override for dump operations
+	OnFailure      DumpOnFailure `mapstructure:"on_failure"`
+}
+
+// DumpOnFailure configures an alert sent when a scheduled dump fails.
+// Either WebhookURL or Exec may be set; WebhookURL takes precedence.
+type DumpOnFailure struct {
+	WebhookURL string `mapstructure:"webhook_url"` // HTTP endpoint to POST a JSON failure payload
+	Exec       string `mapstructure:"exec"`        // shell command to run on failure
 }
 
 // Load reads and validates the config file at path. Environment variables
@@ -102,7 +124,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("port_pool_start", 5433)
 	v.SetDefault("port_pool_end", 5600)
 	v.SetDefault("dump.schedule", "0 * * * *")
-	v.SetDefault("dump.path", "/data/dump/latest.gz")
+	v.SetDefault("dump.path", defaultDumpFilePath())
 	v.SetDefault("dump.stale_threshold", 7200)
 	v.SetDefault("dump.client_image", "")
 	v.SetDefault("warm_pool_size", 0)
@@ -250,14 +272,22 @@ func validate(cfg *Config) error {
 		if cfg.Server.CopySecretSecret == "" {
 			missing = append(missing, "server.copy_secret_secret")
 		}
-		if cfg.Server.Auth.Issuer == "" {
-			missing = append(missing, "server.auth.issuer")
+		// Auth: require either static_token OR full OIDC config, not both.
+		hasStatic := cfg.Server.Auth.StaticToken != ""
+		hasOIDC := cfg.Server.Auth.Issuer != "" || cfg.Server.Auth.Audience != "" || cfg.Server.Auth.JWKSURL != ""
+		if !hasStatic && !hasOIDC {
+			missing = append(missing, "server.auth.static_token or server.auth.issuer+audience+jwks_url")
 		}
-		if cfg.Server.Auth.Audience == "" {
-			missing = append(missing, "server.auth.audience")
-		}
-		if cfg.Server.Auth.JWKSURL == "" {
-			missing = append(missing, "server.auth.jwks_url")
+		if hasOIDC && !hasStatic {
+			if cfg.Server.Auth.Issuer == "" {
+				missing = append(missing, "server.auth.issuer")
+			}
+			if cfg.Server.Auth.Audience == "" {
+				missing = append(missing, "server.auth.audience")
+			}
+			if cfg.Server.Auth.JWKSURL == "" {
+				missing = append(missing, "server.auth.jwks_url")
+			}
 		}
 		if cfg.Server.DBTLS.CertFile == "" {
 			missing = append(missing, "server.db_tls.cert_file")

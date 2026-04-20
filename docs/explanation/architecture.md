@@ -34,6 +34,21 @@ flowchart TD
     APP --> CLEAN
 ```
 
+The same lifecycle applies in both modes. What changes is which machine owns the dump, copy
+containers, and cleanup loop.
+
+## Control-plane pieces
+
+ditto keeps a small amount of local state alongside Docker:
+
+- a compressed dump file that every new copy restores from
+- a SQLite metadata database that tracks copy status, ports, TTL, and ownership
+- an event log used by `ditto copy logs`
+- an optional warm pool of pre-restored copies for low-latency `copy create`
+
+`ditto host` adds the long-running control loop around those pieces: scheduled reseeds, TTL expiry,
+warm-pool refill, orphan recovery, and the authenticated `/v2` API.
+
 ## Why dumps instead of live cloning
 
 ditto intentionally works from a dump file instead of cloning a live database for every request:
@@ -82,6 +97,13 @@ This is useful when:
 - developers should not manage local dump files
 - you want one trusted host to own source credentials and dump refresh
 
+In this mode, the host is also the security boundary:
+
+- caller identity comes from `DITTO_TOKEN`
+- non-admin callers can list, inspect events for, and delete only their own copies
+- admin callers can also query host-level status
+- remote copy credentials are derived per copy from `server.copy_secret_secret`
+
 ## Important constraints
 
 ditto is intentionally opinionated. These constraints matter:
@@ -89,6 +111,7 @@ ditto is intentionally opinionated. These constraints matter:
 - the source database must be reachable from the Docker runtime, not just from the host shell
 - loopback source hosts such as `localhost` are rejected
 - in shared-host mode, copy ports are published on `server.db_bind_host` and DSNs use `server.advertise_host`
+- in the current shared-host implementation, remote copy TLS material must be configured with `server.db_tls`
 - access to the Docker socket is effectively host-level privilege
 - dump freshness is a trade-off between realism and operational cost
 

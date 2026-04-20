@@ -2,11 +2,16 @@
 package dump
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -56,6 +61,7 @@ func (s *Scheduler) Start() error {
 		ctx := context.Background()
 		if err := s.RunOnce(ctx); err != nil {
 			slog.Error("dump: scheduled run failed", "err", err)
+			s.notifyFailure(err)
 		}
 	})
 	if err != nil {
@@ -75,10 +81,16 @@ func (s *Scheduler) Stop() {
 // the raw dump is restored into a staging container, scrubbed, and re-dumped so
 // the final dump file has PII already removed before any copy restores it.
 //
-//  1. Dump source → <destPath>.raw (or .tmp when no obfuscation rules)
-//  2. If obfuscation rules: restore into staging, apply rules, re-dump → <destPath>.tmp
-//  3. Atomically rename .tmp → destPath
+//  1. Validate obfuscation rules against source schema (pre-flight)
+//  2. Dump source → <destPath>.raw (or .tmp when no obfuscation rules)
+//  3. If obfuscation rules: restore into staging, apply rules, re-dump → <destPath>.tmp
+//  4. Atomically rename .tmp → destPath
 func (s *Scheduler) RunOnce(ctx context.Context) error {
+	if len(s.cfg.Obfuscation.Rules) > 0 {
+		if err := s.validateObfuscationRules(ctx); err != nil {
+			return err
+		}
+	}
 	destPath := s.cfg.Dump.Path
 	tmpPath := destPath + ".tmp"
 	rawPath := destPath + ".raw"
@@ -298,4 +310,105 @@ func freePort() (int, error) {
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
 	return port, nil
+}
+
+// validateObfuscationRules connects to the source DB and checks that every
+// table.column referenced in obfuscation rules exists in information_schema.
+// Returns a single error listing all missing columns.
+func (s *Scheduler) validateObfuscationRules(ctx context.Context) error {
+	var driverName, dsn string
+	switch s.cfg.Source.Engine {
+	case "postgres":
+		driverName = "pgx"
+		dsn = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?connect_timeout=5&sslmode=prefer",
+			s.cfg.Source.User, s.cfg.Source.Password,
+			s.cfg.Source.Host, s.cfg.Source.Port, s.cfg.Source.Database)
+	case "mysql":
+		driverName = "mysql"
+		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?timeout=5s",
+			s.cfg.Source.User, s.cfg.Source.Password,
+			s.cfg.Source.Host, s.cfg.Source.Port, s.cfg.Source.Database)
+	default:
+		return fmt.Errorf("dump: validateObfuscationRules: unsupported engine %q", s.cfg.Source.Engine)
+	}
+
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return fmt.Errorf("dump: validateObfuscationRules: open db: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Build an engine-appropriate placeholder for the two bind params.
+	colQuery := `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?`
+	if s.cfg.Source.Engine == "postgres" {
+		colQuery = `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`
+	}
+
+	var missing []string
+	for _, rule := range s.cfg.Obfuscation.Rules {
+		var count int
+		err := db.QueryRowContext(ctx, colQuery, rule.Table, rule.Column).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("dump: validateObfuscationRules: query %s.%s: %w", rule.Table, rule.Column, err)
+		}
+		if count == 0 {
+			missing = append(missing, fmt.Sprintf("%s.%s", rule.Table, rule.Column))
+		}
+	}
+
+	if len(missing) > 0 {
+		return fmt.Errorf("dump: obfuscation rules reference columns not found in source schema: %v — update ditto.yaml to match current schema", missing)
+	}
+	return nil
+}
+
+// notifyFailure fires the on_failure webhook or exec command when a dump fails.
+func (s *Scheduler) notifyFailure(dumpErr error) {
+	of := s.cfg.Dump.OnFailure
+	if of.WebhookURL == "" && of.Exec == "" {
+		return
+	}
+
+	dumpAge := "unknown"
+	if info, err := os.Stat(s.cfg.Dump.Path); err == nil {
+		dumpAge = time.Since(info.ModTime()).Round(time.Second).String()
+	}
+
+	payload := map[string]any{
+		"error":            dumpErr.Error(),
+		"timestamp":        time.Now().UTC().Format(time.RFC3339),
+		"last_dump_age":    dumpAge,
+		"dump_path":        s.cfg.Dump.Path,
+	}
+
+	if of.WebhookURL != "" {
+		body, _ := json.Marshal(payload)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, of.WebhookURL, bytes.NewReader(body))
+		if err != nil {
+			slog.Error("dump: on_failure webhook: build request", "err", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			slog.Error("dump: on_failure webhook: send", "err", err)
+			return
+		}
+		_ = resp.Body.Close()
+		slog.Info("dump: on_failure webhook sent", "status", resp.StatusCode, "url", of.WebhookURL)
+		return
+	}
+
+	// exec fallback
+	cmd := exec.Command("sh", "-c", of.Exec)
+	cmd.Env = append(os.Environ(),
+		"DITTO_DUMP_ERROR="+dumpErr.Error(),
+		"DITTO_DUMP_PATH="+s.cfg.Dump.Path,
+		"DITTO_LAST_DUMP_AGE="+dumpAge,
+	)
+	if err := cmd.Run(); err != nil {
+		slog.Error("dump: on_failure exec failed", "cmd", of.Exec, "err", err)
+	}
 }

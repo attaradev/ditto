@@ -88,7 +88,7 @@ Run your job and delete the copy:
 
 ```bash
 DATABASE_URL="$DATABASE_URL" go test ./...
-ditto copy delete "$COPY_ID" --server=http://ditto.internal:8080
+ditto copy delete --server=http://ditto.internal:8080 "$COPY_ID"
 ```
 
 ## Common flags
@@ -99,7 +99,7 @@ ditto copy delete "$COPY_ID" --server=http://ditto.internal:8080
 | --- | --- |
 | `--ttl 30m` | Override the copy lifetime |
 | `--label <name>` | Tag the copy with a run identifier |
-| `--dump <uri>` | Restore from a specific local path, `s3://`, or `https://` source |
+| `--dump <uri>` | Restore from a specific local path, `s3://`, or `https://` source. In remote mode (`--server`), use a URI the host can fetch; local paths are rejected. |
 | `--obfuscate` | Apply configured obfuscation rules after restore |
 
 See [CLI reference](../reference/cli.md) for the full command surface.
