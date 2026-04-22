@@ -226,12 +226,12 @@ func replaceSQLMySQL(t, c, dataType string) (string, error) {
 	case "phone":
 		// +1-555-01xx-xxxx
 		expr = fmt.Sprintf(
-			"CONCAT('+1-555-01', LPAD(%s %% 99, 2, '0'), '-', LPAD(%s >> 8 %% 9000 + 1000, 4, '0'))",
+			"CONCAT('+1-555-01', LPAD(%s %% 99, 2, '0'), '-', LPAD(((%s >> 8) %% 9000) + 1000, 4, '0'))",
 			h, h,
 		)
 	case "ip":
 		expr = fmt.Sprintf(
-			"CONCAT('10.', %s %% 256, '.', %s >> 8 %% 256, '.', %s >> 16 %% 256)",
+			"CONCAT('10.', %s %% 256, '.', (%s >> 8) %% 256, '.', (%s >> 16) %% 256)",
 			h, h, h,
 		)
 	case "url":

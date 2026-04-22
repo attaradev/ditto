@@ -150,7 +150,8 @@ ditto erd --output schema.mmd
 ditto copy run -- go test ./...
 ```
 
-See [Run Your First Copy](docs/tutorials/run-your-first-copy.md) and
+See [Run Your First Copy](docs/tutorials/run-your-first-copy.md),
+[Demonstrate Obfuscation End to End](docs/tutorials/demonstrate-obfuscation-end-to-end.md), and
 [Configuration Reference](docs/reference/configuration.md) for the full setup.
 
 ## Common workflows
@@ -170,7 +171,7 @@ See [Run Your First Copy](docs/tutorials/run-your-first-copy.md) and
 
 | Section | Start here |
 | --- | --- |
-| Tutorials | [Run your first copy](docs/tutorials/run-your-first-copy.md) |
+| Tutorials | [Run your first copy](docs/tutorials/run-your-first-copy.md), [Demonstrate obfuscation end to end](docs/tutorials/demonstrate-obfuscation-end-to-end.md) |
 | How-to guides | [Local development](docs/how-to/use-ditto-for-local-development.md), [CI](docs/how-to/use-ditto-in-ci.md), [Operate a host](docs/how-to/operate-a-ditto-host.md), [Troubleshooting](docs/how-to/troubleshoot.md) |
 | Reference | [Configuration](docs/reference/configuration.md), [CLI](docs/reference/cli.md) |
 | Explanation | [Architecture](docs/explanation/architecture.md) |

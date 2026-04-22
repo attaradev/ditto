@@ -234,18 +234,57 @@ obfuscation:
       strategy: replace
       type: email
     - table: users
+      column: full_name
+      strategy: replace
+      type: name
+    - table: users
       column: phone
       strategy: replace
       type: phone
-    - table: payments
+    - table: users
+      column: ssn
+      strategy: nullify
+    - table: users
+      column: notes
+      strategy: redact
+    - table: users
+      column: api_key
+      strategy: hash
+    - table: users
+      column: account_uuid
+      strategy: replace
+      type: uuid
+    - table: payment_methods
       column: card_number
       strategy: mask
       keep_last: 4
       mask_char: "*"
+    - table: payment_methods
+      column: billing_email
+      strategy: replace
+      type: email
     - table: audit_logs
       column: ip_address
       strategy: replace
       type: ip
+    - table: audit_logs
+      column: target_url
+      strategy: replace
+      type: url
+    - table: audit_logs
+      column: actor_uuid
+      strategy: replace
+      type: uuid
+```
+
+Optional zero-row exception:
+
+```yaml
+obfuscation:
+  rules:
+    - table: archived_customers
+      column: email
+      strategy: redact
       warn_only: true   # 0-row match emits a warning instead of failing the dump
 ```
 
@@ -274,6 +313,9 @@ Supported `replace` types:
 - `ip`
 - `url`
 - `uuid`
+
+For a full before/after walkthrough using this exact schema shape, see
+[Demonstrate obfuscation end to end](../tutorials/demonstrate-obfuscation-end-to-end.md).
 
 ## Full example
 

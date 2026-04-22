@@ -6,6 +6,8 @@ The docs follow the [Diataxis](https://diataxis.fr/) model so each page has one 
 
 - [Run your first copy](tutorials/run-your-first-copy.md) - the shortest end-to-end path from source
   database to working copy
+- [Demonstrate obfuscation end to end](tutorials/demonstrate-obfuscation-end-to-end.md) - seed
+  synthetic PII, bake obfuscation into the dump, and verify the transformed copy
 
 ## How-to guides
 

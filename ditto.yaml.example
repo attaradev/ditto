@@ -121,25 +121,45 @@ port_pool_end: 5600
 #       column: phone
 #       strategy: replace
 #       type: phone           # +1-555-0147-3821 (NANP fictional range)
-#     - table: events
-#       column: ip_address
-#       strategy: replace
-#       type: ip              # 10.42.17.3 (RFC1918, never public)
 #     - table: users
 #       column: ssn
 #       strategy: nullify     # set to NULL
 #     - table: users
 #       column: notes
 #       strategy: redact      # [redacted]
-#     - table: payments
+#     - table: users
+#       column: api_key
+#       strategy: hash        # 64-char SHA-256 hex
+#     - table: users
+#       column: account_uuid
+#       strategy: replace
+#       type: uuid            # same obfuscated value wherever the raw UUID repeats
+#     - table: payment_methods
 #       column: card_number
 #       strategy: mask
 #       keep_last: 4          # ************1234
 #       mask_char: "*"
+#     - table: payment_methods
+#       column: billing_email
+#       strategy: replace
+#       type: email           # matches users.email for the same raw value
 #     - table: audit_logs
 #       column: ip_address
 #       strategy: replace
-#       type: ip
+#       type: ip              # 10.42.17.3 (RFC1918, never public)
+#     - table: audit_logs
+#       column: target_url
+#       strategy: replace
+#       type: url             # https://example.com/r/1a2b3c4d5e6f
+#     - table: audit_logs
+#       column: actor_uuid
+#       strategy: replace
+#       type: uuid            # matches users.account_uuid for the same raw value
+#
+# Optional zero-row exception when a table may be empty:
+#     - table: archived_customers
+#       column: email
+#       strategy: redact
 #       warn_only: true       # 0-row match emits a warning instead of failing the dump
 
 # Shared-host settings (used by ditto host).

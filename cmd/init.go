@@ -86,15 +86,46 @@ port_pool_end: {{.PortEnd}}
 #       column: phone
 #       strategy: replace
 #       type: phone
+#     - table: users
+#       column: ssn
+#       strategy: nullify
+#     - table: users
+#       column: notes
+#       strategy: redact
+#     - table: users
+#       column: api_key
+#       strategy: hash
+#     - table: users
+#       column: account_uuid
+#       strategy: replace
+#       type: uuid
 #     - table: payment_methods
 #       column: card_number
 #       strategy: mask
 #       mask_char: "*"
 #       keep_last: 4
+#     - table: payment_methods
+#       column: billing_email
+#       strategy: replace
+#       type: email
 #     - table: audit_logs
 #       column: ip_address
 #       strategy: replace
 #       type: ip
+#     - table: audit_logs
+#       column: target_url
+#       strategy: replace
+#       type: url
+#     - table: audit_logs
+#       column: actor_uuid
+#       strategy: replace
+#       type: uuid
+#
+# Optional zero-row exception when a table may be empty:
+#     - table: archived_customers
+#       column: email
+#       strategy: redact
+#       warn_only: true
 
 # Shared-host mode (for CI teams). Uncomment to enable.
 # Requires ditto host to be running. If static_token is set, ditto uses it.

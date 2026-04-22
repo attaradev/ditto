@@ -100,6 +100,8 @@ using a copy.
 
 - Move these environment variables into `ditto.yaml` using the
   [Configuration reference](../reference/configuration.md)
+- Use [Demonstrate obfuscation end to end](demonstrate-obfuscation-end-to-end.md) if you want a
+  full before/after walkthrough of the obfuscation pipeline
 - Use [local development](../how-to/use-ditto-for-local-development.md) for persistent shell sessions
 - Use [CI integration](../how-to/use-ditto-in-ci.md) to scope copies to jobs or workflows
 - Read [Architecture and operating model](../explanation/architecture.md) before running a shared host

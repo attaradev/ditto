@@ -224,6 +224,18 @@ func TestBuildSQL_Replace_Phone_Postgres(t *testing.T) {
 	}
 }
 
+func TestBuildSQL_Replace_Phone_MySQL(t *testing.T) {
+	stmt, _, err := BuildSQL("mysql", ruleReplace("users", "phone", "phone"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{"555-01", ">> 8", "% 9000"} {
+		if !strings.Contains(stmt, want) {
+			t.Errorf("stmt missing %q: %s", want, stmt)
+		}
+	}
+}
+
 func TestBuildSQL_Replace_IP_Postgres(t *testing.T) {
 	stmt, _, err := BuildSQL("postgres", ruleReplace("logs", "ip_address", "ip"))
 	if err != nil {
@@ -231,6 +243,18 @@ func TestBuildSQL_Replace_IP_Postgres(t *testing.T) {
 	}
 	if !strings.Contains(stmt, "'10.'") {
 		t.Errorf("ip expression should use RFC1918 10.x.x.x range: %s", stmt)
+	}
+}
+
+func TestBuildSQL_Replace_IP_MySQL(t *testing.T) {
+	stmt, _, err := BuildSQL("mysql", ruleReplace("logs", "ip_address", "ip"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{"'10.'", ">> 8", ">> 16", "% 256"} {
+		if !strings.Contains(stmt, want) {
+			t.Errorf("stmt missing %q: %s", want, stmt)
+		}
 	}
 }
 
