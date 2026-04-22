@@ -5,6 +5,23 @@ All notable changes to ditto are documented in this file.
 This changelog starts with the current unreleased product snapshot. Earlier history is available in
 `git log`.
 
+## 0.2.0 — 2026-04-22
+
+### Breaking Changes
+
+- **shared-host v2 control plane**: the host daemon now uses a redesigned v2 control plane;
+  existing shared-host deployments must be redeployed before connecting CLI clients at this
+  version
+
+### Added
+
+- Setup diagnostics and shared-host safeguards for `ops` commands
+
+### Fixed
+
+- JavaScript SDK: strip `git+` prefix from repository URL for npm provenance
+- JavaScript SDK: package name reverted to `@attaradev/ditto-sdk`
+
 ## 0.1.0 — 2026-04-04
 
 ### Added
