@@ -127,6 +127,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Obfuscate:    req.Obfuscate,
 	}
 	if req.DumpURI != "" {
+		if !strings.HasPrefix(req.DumpURI, "s3://") && !strings.HasPrefix(req.DumpURI, "https://") {
+			writeError(w, http.StatusBadRequest, "dump_uri must be an s3:// or https:// URI")
+			return
+		}
 		localPath, cleanup, err := dumpfetch.Fetch(r.Context(), req.DumpURI)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "resolve dump_uri: "+err.Error())

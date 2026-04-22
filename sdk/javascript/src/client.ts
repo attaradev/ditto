@@ -42,7 +42,9 @@ export class DittoClient {
       throw new DittoError("fetch is not available - supply a fetch implementation");
     }
 
-    this.baseUrl = serverUrl.replace(/\/+$/, "");
+    let baseUrl = serverUrl;
+    while (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
+    this.baseUrl = baseUrl;
     this.token = token;
     this.ttlSeconds = ttlSeconds;
   }

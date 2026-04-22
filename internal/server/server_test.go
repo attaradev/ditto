@@ -47,7 +47,7 @@ func (c *controllerStub) Destroy(_ context.Context, id string) error {
 	return nil
 }
 
-func TestServerCreateUsesOwnerAndServerSideDumpResolution(t *testing.T) {
+func TestServerCreateSetsOwnerSubject(t *testing.T) {
 	cs, es := newStores(t)
 	controller := &controllerStub{
 		createResp: &store.Copy{
@@ -63,16 +63,11 @@ func TestServerCreateUsesOwnerAndServerSideDumpResolution(t *testing.T) {
 	}
 	api := newTestAPI(cs, es, controller)
 
-	dumpPath := filepath.Join(t.TempDir(), "dump.gz")
-	if err := os.WriteFile(dumpPath, []byte("fake"), 0o600); err != nil {
-		t.Fatalf("write dump: %v", err)
-	}
 	ttl := 600
 	body, err := json.Marshal(apiv2.CreateCopyRequest{
 		TTLSeconds: &ttl,
 		RunID:      "run-1",
 		JobName:    "job-1",
-		DumpURI:    dumpPath,
 		Obfuscate:  true,
 	})
 	if err != nil {
@@ -92,9 +87,6 @@ func TestServerCreateUsesOwnerAndServerSideDumpResolution(t *testing.T) {
 	if controller.createOpts.OwnerSubject != "user-1" {
 		t.Fatalf("OwnerSubject: got %q, want %q", controller.createOpts.OwnerSubject, "user-1")
 	}
-	if controller.createOpts.DumpPath != dumpPath {
-		t.Fatalf("DumpPath: got %q, want %q", controller.createOpts.DumpPath, dumpPath)
-	}
 	if !controller.createOpts.Obfuscate {
 		t.Fatal("Obfuscate: got false, want true")
 	}
@@ -105,6 +97,31 @@ func TestServerCreateUsesOwnerAndServerSideDumpResolution(t *testing.T) {
 	}
 	if _, ok := resp["connection_string"]; !ok {
 		t.Fatal("create response missing connection_string")
+	}
+}
+
+func TestServerCreateRejectsLocalDumpURI(t *testing.T) {
+	cs, es := newStores(t)
+	api := newTestAPI(cs, es, &controllerStub{})
+
+	localPath := filepath.Join(t.TempDir(), "dump.gz")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o600); err != nil {
+		t.Fatalf("write dump: %v", err)
+	}
+
+	for _, uri := range []string{localPath, "/etc/passwd", "../secret.gz", "relative/path.gz"} {
+		body, err := json.Marshal(apiv2.CreateCopyRequest{DumpURI: uri})
+		if err != nil {
+			t.Fatalf("marshal request: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v2/copies", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer owner-token")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("URI %q: got status %d, want %d", uri, rec.Code, http.StatusBadRequest)
+		}
 	}
 }
 
