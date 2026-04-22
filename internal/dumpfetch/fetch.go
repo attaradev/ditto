@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -31,7 +33,7 @@ func Fetch(ctx context.Context, uri string) (localPath string, cleanup func(), e
 	case strings.HasPrefix(uri, "http://"), strings.HasPrefix(uri, "https://"):
 		return fetchHTTP(ctx, uri)
 	default:
-		return uri, noop, nil
+		return filepath.Clean(uri), noop, nil
 	}
 }
 
@@ -62,7 +64,11 @@ func fetchS3(ctx context.Context, uri string) (string, func(), error) {
 }
 
 func fetchHTTP(ctx context.Context, uri string) (string, func(), error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+	parsed, err := url.Parse(uri)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", nil, fmt.Errorf("dumpfetch: %q is not a valid http or https URI", uri)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return "", nil, fmt.Errorf("dumpfetch: build request for %s: %w", uri, err)
 	}
