@@ -214,6 +214,7 @@ func resolveDump(ctx context.Context, ref string) (string, func(), error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("refresh: resolve dump: %w", err)
 	}
+	localPath = filepath.Clean(localPath)
 	info, err := os.Stat(localPath)
 	if err != nil {
 		cleanup()
