@@ -128,7 +128,8 @@ ditto copy create --server=http://ditto.internal:8080
 Protect the service with network policy appropriate to the published DB ports. See
 [SECURITY.md](../../SECURITY.md).
 
-Non-admin callers can list and destroy only their own copies. The shared-host `/v2/status` endpoint and target refresh endpoint require an admin-capable token.
+Non-admin callers can list and destroy only their own copies. The shared-host `/v2/status` endpoint
+and target refresh endpoint require an admin-capable token.
 
 ## Runner setup
 
