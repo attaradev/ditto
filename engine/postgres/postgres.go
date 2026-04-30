@@ -5,20 +5,16 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"net"
 	"path"
 	"path/filepath"
 	"time"
 
 	"github.com/attaradev/ditto/engine"
+	"github.com/attaradev/ditto/engine/internal/engineutil"
 	"github.com/attaradev/ditto/internal/dockerutil"
 	"github.com/attaradev/ditto/internal/secret"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx stdlib driver for database/sql
 )
 
@@ -76,15 +72,12 @@ func (e *Engine) ConnectionString(conn engine.ConnectionConfig) string {
 // --schema-only is passed so only DDL is captured (no row data).
 func (e *Engine) Dump(
 	ctx context.Context,
-	docker *client.Client,
-	clientImage string,
-	src engine.SourceConfig,
-	destPath string,
-	opts engine.DumpOptions,
+	req engine.DumpRequest,
 ) error {
-	if docker == nil {
-		return fmt.Errorf("postgres: docker runtime is required")
+	if err := engineutil.RequireDocker("postgres", req.Docker); err != nil {
+		return err
 	}
+	src := req.Source
 	if err := engine.ValidateSourceHost(src.Host); err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
@@ -92,50 +85,32 @@ func (e *Engine) Dump(
 	if err != nil {
 		return fmt.Errorf("postgres: resolve password: %w", err)
 	}
-	if clientImage == "" {
-		clientImage = e.ContainerImage()
-	}
+	clientImage := engineutil.ClientImage(req.ClientImage, e.ContainerImage())
 
 	cmd := []string{
 		"--format=custom",
 		"--compress=9",
 		"--no-owner",
 		"--no-acl",
-		"--file=" + path.Join("/dump", filepath.Base(destPath)),
+		"--file=" + path.Join("/dump", filepath.Base(req.DestPath)),
 		"--host=" + src.Host,
 		fmt.Sprintf("--port=%d", src.Port),
 		"--dbname=" + src.Database,
 		"--username=" + src.User,
 	}
-	if opts.SchemaOnly {
+	if req.Options.SchemaOnly {
 		cmd = append(cmd, "--schema-only")
 	}
 
-	var netCfg *network.NetworkingConfig
-	if src.NetworkName != "" {
-		netCfg = &network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{
-				src.NetworkName: {},
-			},
-		}
-	}
-	if err := dockerutil.RunContainerOnNetwork(ctx, docker,
+	if err := dockerutil.RunContainerOnNetwork(ctx, req.Docker,
 		&container.Config{
 			Image:      clientImage,
 			Entrypoint: []string{"pg_dump"},
 			Cmd:        cmd,
 			Env:        []string{"PGPASSWORD=" + password},
 		},
-		&container.HostConfig{
-			Mounts: []mount.Mount{
-				{
-					Type:   mount.TypeBind,
-					Source: filepath.Dir(destPath),
-					Target: "/dump",
-				},
-			},
-		},
-		netCfg,
+		engineutil.DumpHostConfig(req.DestPath),
+		engineutil.NetworkConfig(src.NetworkName),
 		"",
 	); err != nil {
 		return fmt.Errorf("postgres: dump helper failed: %w", err)
@@ -147,17 +122,17 @@ func (e *Engine) Dump(
 // containerName is the Docker container name (e.g. "ditto-<id>") as set by the
 // copy manager. The manager calls WaitReady before Restore, so readiness is
 // already guaranteed when this method is invoked.
-func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath string, containerName string, copy engine.CopyBootstrap) error {
-	if docker == nil {
-		return fmt.Errorf("postgres: docker runtime is required")
+func (e *Engine) Restore(ctx context.Context, req engine.RestoreRequest) error {
+	if err := engineutil.RequireDocker("postgres", req.Docker); err != nil {
+		return err
 	}
-	if err := dockerutil.Exec(ctx, docker, containerName, []string{
+	if err := dockerutil.Exec(ctx, req.Docker, req.ContainerName, []string{
 		"pg_restore",
-		"--username=" + copy.User,
-		"--dbname=" + copy.Database,
+		"--username=" + req.Copy.User,
+		"--dbname=" + req.Copy.Database,
 		"--no-owner",
 		"--no-acl",
-		"/dump/" + filepath.Base(dumpPath),
+		"/dump/" + filepath.Base(req.DumpPath),
 	}, nil); err != nil {
 		return fmt.Errorf("postgres: restore failed: %w", err)
 	}
@@ -168,24 +143,24 @@ func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath st
 // inside containerName and writes it to destPath on the host.
 // The container must have its dump directory mounted at /dump (read-write).
 // When opts.SchemaOnly is true, --schema-only is passed to pg_dump.
-func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, copy engine.CopyBootstrap, opts engine.DumpOptions) error {
-	if docker == nil {
-		return fmt.Errorf("postgres: docker runtime is required")
+func (e *Engine) DumpFromContainer(ctx context.Context, req engine.DumpFromContainerRequest) error {
+	if err := engineutil.RequireDocker("postgres", req.Docker); err != nil {
+		return err
 	}
 	cmd := []string{
 		"pg_dump",
-		"--username=" + copy.User,
-		"--dbname=" + copy.Database,
+		"--username=" + req.Copy.User,
+		"--dbname=" + req.Copy.Database,
 		"--format=custom",
 		"--compress=9",
 		"--no-owner",
 		"--no-acl",
-		"--file=/dump/" + filepath.Base(destPath),
+		"--file=/dump/" + filepath.Base(req.DestPath),
 	}
-	if opts.SchemaOnly {
+	if req.Options.SchemaOnly {
 		cmd = append(cmd, "--schema-only")
 	}
-	if err := dockerutil.Exec(ctx, docker, containerName, cmd, nil); err != nil {
+	if err := dockerutil.Exec(ctx, req.Docker, req.ContainerName, cmd, nil); err != nil {
 		return fmt.Errorf("postgres: dump from container failed: %w", err)
 	}
 	return nil
@@ -194,39 +169,13 @@ func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, c
 // WaitReady polls port until Postgres is accepting connections or timeout
 // elapses. It first waits for TCP connectivity, then confirms with SELECT 1.
 func (e *Engine) WaitReady(conn engine.ConnectionConfig, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	addr := net.JoinHostPort(conn.Host, fmt.Sprintf("%d", conn.Port))
-
-	for time.Now().Before(deadline) {
-		tcpConn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
-		if err == nil {
-			_ = tcpConn.Close()
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	if time.Now().After(deadline) {
-		return fmt.Errorf("postgres: timed out waiting for TCP on port %d", conn.Port)
-	}
-
-	// Open one connection pool and reuse it across iterations.
-	dsn := e.ConnectionString(conn)
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		return fmt.Errorf("postgres: open readiness probe DB: %w", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_, err := db.ExecContext(ctx, "SELECT 1")
-		cancel()
-		if err == nil {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("postgres: timed out waiting for SELECT 1 on port %d", conn.Port)
+	return engineutil.WaitReady(engineutil.ReadyRequest{
+		Prefix:     "postgres",
+		DriverName: "pgx",
+		Connection: conn,
+		Timeout:    timeout,
+		DSN:        e.ConnectionString(conn),
+	})
 }
 
 // Ensure Engine satisfies the interface at compile time.

@@ -10,7 +10,6 @@ import (
 	"github.com/attaradev/ditto/engine"
 	"github.com/attaradev/ditto/internal/config"
 	"github.com/attaradev/ditto/internal/store"
-	"github.com/docker/docker/client"
 )
 
 // dumpMock is a minimal engine.Engine whose Dump writes fixed content to the
@@ -18,6 +17,7 @@ import (
 type dumpMock struct {
 	content []byte
 	dumpErr error
+	dumps   []engine.DumpRequest
 }
 
 func (d *dumpMock) Name() string           { return "mock" }
@@ -30,17 +30,18 @@ func (d *dumpMock) ConnectionString(_ engine.ConnectionConfig) string { return "
 func (d *dumpMock) WaitReady(_ engine.ConnectionConfig, _ time.Duration) error {
 	return nil
 }
-func (d *dumpMock) Restore(_ context.Context, _ *client.Client, _ string, _ string, _ engine.CopyBootstrap) error {
+func (d *dumpMock) Restore(_ context.Context, _ engine.RestoreRequest) error {
 	return nil
 }
-func (d *dumpMock) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string, _ engine.CopyBootstrap, _ engine.DumpOptions) error {
+func (d *dumpMock) DumpFromContainer(_ context.Context, _ engine.DumpFromContainerRequest) error {
 	return nil
 }
-func (d *dumpMock) Dump(_ context.Context, _ *client.Client, _ string, _ engine.SourceConfig, dest string, _ engine.DumpOptions) error {
+func (d *dumpMock) Dump(_ context.Context, req engine.DumpRequest) error {
+	d.dumps = append(d.dumps, req)
 	if d.dumpErr != nil {
 		return d.dumpErr
 	}
-	return os.WriteFile(dest, d.content, 0o600)
+	return os.WriteFile(req.DestPath, d.content, 0o600)
 }
 
 var _ engine.Engine = (*dumpMock)(nil)
@@ -131,7 +132,8 @@ func TestSchemaOnlyDump(t *testing.T) {
 			SchemaPath: schemaPath,
 		},
 	}
-	sched := New(cfg, &dumpMock{content: []byte("fake dump data")}, store.NewEventStore(db), nil)
+	eng := &dumpMock{content: []byte("fake dump data")}
+	sched := New(cfg, eng, store.NewEventStore(db), nil)
 
 	if err := sched.RunOnce(t.Context()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
@@ -154,5 +156,15 @@ func TestSchemaOnlyDump(t *testing.T) {
 	// No temp files left behind.
 	if _, err := os.Stat(schemaPath + ".tmp"); !os.IsNotExist(err) {
 		t.Error("schema .tmp file should not exist after successful run")
+	}
+
+	if len(eng.dumps) != 2 {
+		t.Fatalf("dump requests: got %d, want 2", len(eng.dumps))
+	}
+	if eng.dumps[0].DestPath != destPath+".tmp" || eng.dumps[0].Options.SchemaOnly {
+		t.Errorf("full dump request: got dest=%q schemaOnly=%v", eng.dumps[0].DestPath, eng.dumps[0].Options.SchemaOnly)
+	}
+	if eng.dumps[1].DestPath != schemaPath+".tmp" || !eng.dumps[1].Options.SchemaOnly {
+		t.Errorf("schema dump request: got dest=%q schemaOnly=%v", eng.dumps[1].DestPath, eng.dumps[1].Options.SchemaOnly)
 	}
 }

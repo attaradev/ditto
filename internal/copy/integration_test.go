@@ -24,7 +24,11 @@ func TestManagerCreateAppliesPostRestoreObfuscation(t *testing.T) {
 
 			dumpDir := t.TempDir()
 			rawDumpPath := filepath.Join(dumpDir, "raw.gz")
-			if err := suite.Engine.Dump(t.Context(), suite.Docker, "", sourceDB.NetworkSourceConfig(), rawDumpPath, engine.DumpOptions{}); err != nil {
+			if err := suite.Engine.Dump(t.Context(), engine.DumpRequest{
+				Docker:   suite.Docker,
+				Source:   sourceDB.NetworkSourceConfig(),
+				DestPath: rawDumpPath,
+			}); err != nil {
 				t.Fatalf("Dump raw source: %v", err)
 			}
 
@@ -64,8 +68,8 @@ func newManager(t *testing.T, suite *integrationdb.Suite, dumpPath string) *copy
 	t.Cleanup(func() { _ = db.Close() })
 
 	port := integrationdb.MustFreePort(t)
-	manager, err := copyapi.NewManager(
-		&config.Config{
+	manager, err := copyapi.NewManager(copyapi.ManagerDeps{
+		Config: &config.Config{
 			Dump: config.Dump{
 				Path:           dumpPath,
 				StaleThreshold: 3600,
@@ -77,12 +81,12 @@ func newManager(t *testing.T, suite *integrationdb.Suite, dumpPath string) *copy
 				Rules: integrationdb.ObfuscationRules(),
 			},
 		},
-		suite.Engine,
-		store.NewCopyStore(db),
-		store.NewEventStore(db),
-		copyapi.NewPortPool(port, port, nil),
-		suite.Docker,
-	)
+		Engine:     suite.Engine,
+		CopyStore:  store.NewCopyStore(db),
+		EventStore: store.NewEventStore(db),
+		PortPool:   copyapi.NewPortPool(port, port, nil),
+		Docker:     suite.Docker,
+	})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

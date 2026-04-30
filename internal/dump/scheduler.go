@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -86,22 +87,48 @@ func (s *Scheduler) Stop() {
 //  3. If obfuscation rules: restore into staging, apply rules, re-dump → <destPath>.tmp
 //  4. Atomically rename .tmp → destPath
 func (s *Scheduler) RunOnce(ctx context.Context) error {
-	if len(s.cfg.Obfuscation.Rules) > 0 {
-		if err := s.validateObfuscationRules(ctx); err != nil {
-			return err
-		}
-	}
-	destPath := s.cfg.Dump.Path
-	tmpPath := destPath + ".tmp"
-	rawPath := destPath + ".raw"
-
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o750); err != nil {
-		return fmt.Errorf("dump: mkdir %s: %w", filepath.Dir(destPath), err)
+	if err := s.validateConfiguredObfuscation(ctx); err != nil {
+		return err
 	}
 
-	slog.Info("dump: starting", "dest", destPath)
+	paths := s.dumpPaths()
+	if err := os.MkdirAll(filepath.Dir(paths.dest), 0o750); err != nil {
+		return fmt.Errorf("dump: mkdir %s: %w", filepath.Dir(paths.dest), err)
+	}
 
-	src := engine.SourceConfig{
+	slog.Info("dump: starting", "dest", paths.dest)
+	src := s.sourceConfig()
+	info, err := s.createFullDump(ctx, src, paths)
+	if err != nil {
+		return err
+	}
+
+	s.recordCompletedDump(paths.dest, info.Size(), paths.hasRules)
+	if err := s.dumpOptionalSchema(ctx, src); err != nil {
+		return err
+	}
+	return nil
+}
+
+type dumpPaths struct {
+	dest     string
+	tmp      string
+	raw      string
+	hasRules bool
+}
+
+func (s *Scheduler) dumpPaths() dumpPaths {
+	dest := s.cfg.Dump.Path
+	return dumpPaths{
+		dest:     dest,
+		tmp:      dest + ".tmp",
+		raw:      dest + ".raw",
+		hasRules: len(s.cfg.Obfuscation.Rules) > 0,
+	}
+}
+
+func (s *Scheduler) sourceConfig() engine.SourceConfig {
+	return engine.SourceConfig{
 		Host:           s.cfg.Source.Host,
 		Port:           s.cfg.Source.Port,
 		Database:       s.cfg.Source.Database,
@@ -109,60 +136,108 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		Password:       s.cfg.Source.Password,
 		PasswordSecret: s.cfg.Source.PasswordSecret,
 	}
+}
 
-	hasRules := len(s.cfg.Obfuscation.Rules) > 0
-	dumpDest := tmpPath
-	if hasRules {
-		dumpDest = rawPath
-		_ = os.Remove(rawPath)
+func (s *Scheduler) validateConfiguredObfuscation(ctx context.Context) error {
+	if len(s.cfg.Obfuscation.Rules) == 0 {
+		return nil
+	}
+	return s.validateObfuscationRules(ctx)
+}
+
+func (s *Scheduler) createFullDump(ctx context.Context, src engine.SourceConfig, paths dumpPaths) (os.FileInfo, error) {
+	dumpDest := paths.tmp
+	if paths.hasRules {
+		dumpDest = paths.raw
+		_ = os.Remove(paths.raw)
 	} else {
-		_ = os.Remove(tmpPath)
+		_ = os.Remove(paths.tmp)
 	}
 
-	if err := s.eng.Dump(ctx, s.docker, s.cfg.Dump.ClientImage, src, dumpDest, engine.DumpOptions{}); err != nil {
+	if err := s.dumpSource(ctx, sourceDumpRequest{
+		source:   src,
+		destPath: dumpDest,
+	}); err != nil {
 		_ = os.Remove(dumpDest)
-		return fmt.Errorf("dump: engine dump: %w", err)
+		return nil, fmt.Errorf("dump: engine dump: %w", err)
 	}
 
-	info, err := os.Stat(dumpDest)
+	info, err := statNonEmptyDump(dumpDest, "dump: file missing or empty after dump")
+	if err != nil {
+		_ = os.Remove(dumpDest)
+		return nil, err
+	}
+
+	if paths.hasRules {
+		info, err = s.replaceWithObfuscatedDump(ctx, paths)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := atomicReplace(paths.tmp, paths.dest); err != nil {
+		_ = os.Remove(paths.tmp)
+		return nil, fmt.Errorf("dump: rename %s -> %s: %w", paths.tmp, paths.dest, err)
+	}
+	return info, nil
+}
+
+func (s *Scheduler) replaceWithObfuscatedDump(ctx context.Context, paths dumpPaths) (os.FileInfo, error) {
+	slog.Info("dump: baking obfuscation", "rules", len(s.cfg.Obfuscation.Rules))
+	if err := s.bakeObfuscation(ctx, paths.raw, paths.tmp); err != nil {
+		_ = os.Remove(paths.raw)
+		_ = os.Remove(paths.tmp)
+		return nil, fmt.Errorf("dump: bake obfuscation: %w", err)
+	}
+	_ = os.Remove(paths.raw)
+
+	info, err := statNonEmptyDump(paths.tmp, "dump: obfuscated file missing or empty")
+	if err != nil {
+		_ = os.Remove(paths.tmp)
+		return nil, err
+	}
+	return info, nil
+}
+
+type sourceDumpRequest struct {
+	source   engine.SourceConfig
+	destPath string
+	options  engine.DumpOptions
+}
+
+func (s *Scheduler) dumpSource(ctx context.Context, req sourceDumpRequest) error {
+	return s.eng.Dump(ctx, engine.DumpRequest{
+		Docker:      s.docker,
+		ClientImage: s.cfg.Dump.ClientImage,
+		Source:      req.source,
+		DestPath:    req.destPath,
+		Options:     req.options,
+	})
+}
+
+func statNonEmptyDump(path, emptyMessage string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
 	if err != nil || info.Size() == 0 {
-		_ = os.Remove(dumpDest)
-		return fmt.Errorf("dump: file missing or empty after dump")
+		return nil, errors.New(emptyMessage)
 	}
+	return info, nil
+}
 
-	if hasRules {
-		slog.Info("dump: baking obfuscation", "rules", len(s.cfg.Obfuscation.Rules))
-		if err := s.bakeObfuscation(ctx, rawPath, tmpPath); err != nil {
-			_ = os.Remove(rawPath)
-			_ = os.Remove(tmpPath)
-			return fmt.Errorf("dump: bake obfuscation: %w", err)
-		}
-		_ = os.Remove(rawPath)
+func atomicReplace(src, dest string) error {
+	return os.Rename(src, dest)
+}
 
-		if info, err = os.Stat(tmpPath); err != nil || info.Size() == 0 {
-			_ = os.Remove(tmpPath)
-			return fmt.Errorf("dump: obfuscated file missing or empty")
-		}
-	}
-
-	if err := os.Rename(tmpPath, destPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("dump: rename %s -> %s: %w", tmpPath, destPath, err)
-	}
-
-	slog.Info("dump: complete", "dest", destPath, "size_bytes", info.Size(), "obfuscated", hasRules)
+func (s *Scheduler) recordCompletedDump(destPath string, size int64, obfuscated bool) {
+	slog.Info("dump: complete", "dest", destPath, "size_bytes", size, "obfuscated", obfuscated)
 	_ = s.events.Append("dump", "latest", "completed", "scheduler",
-		map[string]any{"dest": destPath, "size_bytes": info.Size(), "obfuscated": hasRules})
+		map[string]any{"dest": destPath, "size_bytes": size, "obfuscated": obfuscated})
+}
 
-	// Schema-only dump (optional). No obfuscation bake — schema dumps contain
-	// no row data, so PII scrubbing is a no-op.
-	if s.cfg.Dump.SchemaPath != "" {
-		if err := s.dumpSchemaOnly(ctx, src); err != nil {
-			return err
-		}
+func (s *Scheduler) dumpOptionalSchema(ctx context.Context, src engine.SourceConfig) error {
+	if s.cfg.Dump.SchemaPath == "" {
+		return nil
 	}
-
-	return nil
+	return s.dumpSchemaOnly(ctx, src)
 }
 
 // dumpSchemaOnly runs a DDL-only dump and atomically replaces cfg.Dump.SchemaPath.
@@ -176,18 +251,22 @@ func (s *Scheduler) dumpSchemaOnly(ctx context.Context, src engine.SourceConfig)
 	_ = os.Remove(schemaTmp)
 
 	slog.Info("dump: schema-only starting", "dest", schemaPath)
-	if err := s.eng.Dump(ctx, s.docker, s.cfg.Dump.ClientImage, src, schemaTmp, engine.DumpOptions{SchemaOnly: true}); err != nil {
+	if err := s.dumpSource(ctx, sourceDumpRequest{
+		source:   src,
+		destPath: schemaTmp,
+		options:  engine.DumpOptions{SchemaOnly: true},
+	}); err != nil {
 		_ = os.Remove(schemaTmp)
 		return fmt.Errorf("dump: schema-only dump: %w", err)
 	}
 
-	info, err := os.Stat(schemaTmp)
-	if err != nil || info.Size() == 0 {
+	info, err := statNonEmptyDump(schemaTmp, "dump: schema-only file missing or empty after dump")
+	if err != nil {
 		_ = os.Remove(schemaTmp)
-		return fmt.Errorf("dump: schema-only file missing or empty after dump")
+		return err
 	}
 
-	if err := os.Rename(schemaTmp, schemaPath); err != nil {
+	if err := atomicReplace(schemaTmp, schemaPath); err != nil {
 		_ = os.Remove(schemaTmp)
 		return fmt.Errorf("dump: rename schema dump %s -> %s: %w", schemaTmp, schemaPath, err)
 	}
@@ -206,26 +285,20 @@ func (s *Scheduler) bakeObfuscation(ctx context.Context, rawPath, outPath string
 		return fmt.Errorf("allocate staging port: %w", err)
 	}
 	copyBootstrap := engine.DefaultLocalBootstrap()
-	conn := engine.ConnectionConfig{
-		Host:     "localhost",
-		Port:     port,
-		Database: copyBootstrap.Database,
-		User:     copyBootstrap.User,
-		Password: copyBootstrap.Password,
-	}
+	conn := stagingConnection(port, copyBootstrap)
 
-	image := s.cfg.CopyImage
-	if image == "" {
-		image = s.eng.ContainerImage()
+	containerReq := stagingContainerRequest{
+		name:     fmt.Sprintf("ditto-bake-%d", port),
+		port:     port,
+		dumpPath: rawPath,
+		image:    s.copyImage(),
 	}
-
-	ctrName := fmt.Sprintf("ditto-bake-%d", port)
-	ctrID, err := s.startStagingContainer(ctx, ctrName, port, rawPath, image)
+	ctrID, err := s.startStagingContainer(ctx, containerReq)
 	if err != nil {
 		return fmt.Errorf("start staging container: %w", err)
 	}
 	defer func() {
-		_ = s.docker.ContainerStop(context.Background(), ctrName, container.StopOptions{Timeout: new(10)})
+		_ = s.docker.ContainerStop(context.Background(), containerReq.name, container.StopOptions{Timeout: new(10)})
 		_ = s.docker.ContainerRemove(context.Background(), ctrID, container.RemoveOptions{Force: true})
 	}()
 
@@ -233,7 +306,12 @@ func (s *Scheduler) bakeObfuscation(ctx context.Context, rawPath, outPath string
 		return fmt.Errorf("staging ready: %w", err)
 	}
 
-	if err := s.eng.Restore(ctx, s.docker, rawPath, ctrName, copyBootstrap); err != nil {
+	if err := s.eng.Restore(ctx, engine.RestoreRequest{
+		Docker:        s.docker,
+		DumpPath:      rawPath,
+		ContainerName: containerReq.name,
+		Copy:          copyBootstrap,
+	}); err != nil {
 		return fmt.Errorf("staging restore: %w", err)
 	}
 
@@ -242,28 +320,57 @@ func (s *Scheduler) bakeObfuscation(ctx context.Context, rawPath, outPath string
 		return fmt.Errorf("staging obfuscate: %w", err)
 	}
 
-	if err := s.eng.DumpFromContainer(ctx, s.docker, ctrName, outPath, copyBootstrap, engine.DumpOptions{}); err != nil {
+	if err := s.eng.DumpFromContainer(ctx, engine.DumpFromContainerRequest{
+		Docker:        s.docker,
+		ContainerName: containerReq.name,
+		DestPath:      outPath,
+		Copy:          copyBootstrap,
+	}); err != nil {
 		return fmt.Errorf("staging re-dump: %w", err)
 	}
 
 	return nil
 }
 
+func stagingConnection(port int, copyBootstrap engine.CopyBootstrap) engine.ConnectionConfig {
+	return engine.ConnectionConfig{
+		Host:     "localhost",
+		Port:     port,
+		Database: copyBootstrap.Database,
+		User:     copyBootstrap.User,
+		Password: copyBootstrap.Password,
+	}
+}
+
+func (s *Scheduler) copyImage() string {
+	if s.cfg.CopyImage != "" {
+		return s.cfg.CopyImage
+	}
+	return s.eng.ContainerImage()
+}
+
 // startStagingContainer creates and starts a short-lived container for the
 // obfuscation bake step. The dump directory is mounted read-write at /dump so
 // DumpFromContainer can write its output there.
-func (s *Scheduler) startStagingContainer(ctx context.Context, name string, port int, dumpPath, image string) (containerID string, err error) {
-	if err := dockerutil.EnsureImage(ctx, s.docker, image); err != nil {
+type stagingContainerRequest struct {
+	name     string
+	port     int
+	dumpPath string
+	image    string
+}
+
+func (s *Scheduler) startStagingContainer(ctx context.Context, req stagingContainerRequest) (containerID string, err error) {
+	if err := dockerutil.EnsureImage(ctx, s.docker, req.image); err != nil {
 		return "", err
 	}
 
-	portStr := fmt.Sprintf("%d", port)
+	portStr := fmt.Sprintf("%d", req.port)
 	exposedPort := nat.Port(fmt.Sprintf("%d/tcp", s.eng.ContainerPort()))
 	spec := s.eng.ContainerSpec(engine.DefaultLocalBootstrap())
 
 	resp, err := s.docker.ContainerCreate(ctx,
 		&container.Config{
-			Image:        image,
+			Image:        req.image,
 			Env:          spec.Env,
 			Cmd:          spec.Cmd,
 			ExposedPorts: nat.PortSet{exposedPort: struct{}{}},
@@ -274,12 +381,12 @@ func (s *Scheduler) startStagingContainer(ctx context.Context, name string, port
 			},
 			Mounts: []mount.Mount{{
 				Type:     mount.TypeBind,
-				Source:   filepath.Dir(dumpPath),
+				Source:   filepath.Dir(req.dumpPath),
 				Target:   "/dump",
 				ReadOnly: false,
 			}},
 		},
-		nil, nil, name,
+		nil, nil, req.name,
 	)
 	if err != nil {
 		return "", fmt.Errorf("create staging container: %w", err)
@@ -311,17 +418,7 @@ func (s *Scheduler) validateObfuscationRules(ctx context.Context) error {
 		return fmt.Errorf("dump: validateObfuscationRules: %w", err)
 	}
 
-	var dsn string
-	switch s.cfg.Source.Engine {
-	case "postgres":
-		dsn = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?connect_timeout=5&sslmode=prefer",
-			s.cfg.Source.User, s.cfg.Source.Password,
-			s.cfg.Source.Host, s.cfg.Source.Port, s.cfg.Source.Database)
-	case "mysql":
-		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?timeout=5s",
-			s.cfg.Source.User, s.cfg.Source.Password,
-			s.cfg.Source.Host, s.cfg.Source.Port, s.cfg.Source.Database)
-	}
+	dsn := s.validationDSN()
 
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
@@ -329,11 +426,7 @@ func (s *Scheduler) validateObfuscationRules(ctx context.Context) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Build an engine-appropriate placeholder for the two bind params.
-	colQuery := `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?`
-	if s.cfg.Source.Engine == "postgres" {
-		colQuery = `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`
-	}
+	colQuery := columnExistenceQuery(s.cfg.Source.Engine)
 
 	var missing []string
 	for _, rule := range s.cfg.Obfuscation.Rules {
@@ -353,6 +446,28 @@ func (s *Scheduler) validateObfuscationRules(ctx context.Context) error {
 	return nil
 }
 
+func (s *Scheduler) validationDSN() string {
+	switch s.cfg.Source.Engine {
+	case "postgres":
+		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?connect_timeout=5&sslmode=prefer",
+			s.cfg.Source.User, s.cfg.Source.Password,
+			s.cfg.Source.Host, s.cfg.Source.Port, s.cfg.Source.Database)
+	case "mysql":
+		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?timeout=5s",
+			s.cfg.Source.User, s.cfg.Source.Password,
+			s.cfg.Source.Host, s.cfg.Source.Port, s.cfg.Source.Database)
+	default:
+		return ""
+	}
+}
+
+func columnExistenceQuery(engineName string) string {
+	if engineName == "postgres" {
+		return `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`
+	}
+	return `SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?`
+}
+
 // notifyFailure fires the on_failure webhook or exec command when a dump fails.
 func (s *Scheduler) notifyFailure(dumpErr error) {
 	of := s.cfg.Dump.OnFailure
@@ -360,46 +475,55 @@ func (s *Scheduler) notifyFailure(dumpErr error) {
 		return
 	}
 
-	dumpAge := "unknown"
-	if info, err := os.Stat(s.cfg.Dump.Path); err == nil {
-		dumpAge = time.Since(info.ModTime()).Round(time.Second).String()
-	}
-
 	payload := map[string]any{
 		"error":         dumpErr.Error(),
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
-		"last_dump_age": dumpAge,
+		"last_dump_age": s.lastDumpAge(),
 		"dump_path":     s.cfg.Dump.Path,
 	}
 
 	if of.WebhookURL != "" {
-		body, _ := json.Marshal(payload)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, of.WebhookURL, bytes.NewReader(body))
-		if err != nil {
-			slog.Error("dump: on_failure webhook: build request", "err", err)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			slog.Error("dump: on_failure webhook: send", "err", err)
-			return
-		}
-		_ = resp.Body.Close()
-		slog.Info("dump: on_failure webhook sent", "status", resp.StatusCode, "url", of.WebhookURL)
+		s.sendFailureWebhook(of.WebhookURL, payload)
 		return
 	}
 
-	// exec fallback
-	cmd := exec.Command("sh", "-c", of.Exec) //nolint:gosec // user-configured command from ditto.yaml
+	s.runFailureExec(of.Exec, dumpErr)
+}
+
+func (s *Scheduler) lastDumpAge() string {
+	if info, err := os.Stat(s.cfg.Dump.Path); err == nil {
+		return time.Since(info.ModTime()).Round(time.Second).String()
+	}
+	return "unknown"
+}
+
+func (s *Scheduler) sendFailureWebhook(webhookURL string, payload map[string]any) {
+	body, _ := json.Marshal(payload)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
+	if err != nil {
+		slog.Error("dump: on_failure webhook: build request", "err", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Error("dump: on_failure webhook: send", "err", err)
+		return
+	}
+	_ = resp.Body.Close()
+	slog.Info("dump: on_failure webhook sent", "status", resp.StatusCode, "url", webhookURL)
+}
+
+func (s *Scheduler) runFailureExec(execCmd string, dumpErr error) {
+	cmd := exec.Command("sh", "-c", execCmd) //nolint:gosec // user-configured command from ditto.yaml
 	cmd.Env = append(os.Environ(),
 		"DITTO_DUMP_ERROR="+dumpErr.Error(),
 		"DITTO_DUMP_PATH="+s.cfg.Dump.Path,
-		"DITTO_LAST_DUMP_AGE="+dumpAge,
+		"DITTO_LAST_DUMP_AGE="+s.lastDumpAge(),
 	)
 	if err := cmd.Run(); err != nil {
-		slog.Error("dump: on_failure exec failed", "cmd", of.Exec, "err", err)
+		slog.Error("dump: on_failure exec failed", "cmd", execCmd, "err", err)
 	}
 }

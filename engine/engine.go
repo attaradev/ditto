@@ -29,6 +29,35 @@ type DumpOptions struct {
 	SchemaOnly bool // when true, dump DDL only — no row data
 }
 
+// DumpRequest contains all inputs needed to create a dump from a source
+// database through a Docker-compatible runtime.
+type DumpRequest struct {
+	Docker      *client.Client
+	ClientImage string
+	Source      SourceConfig
+	DestPath    string
+	Options     DumpOptions
+}
+
+// DumpFromContainerRequest contains all inputs needed to dump a database that
+// is already running inside a managed container.
+type DumpFromContainerRequest struct {
+	Docker        *client.Client
+	ContainerName string
+	DestPath      string
+	Copy          CopyBootstrap
+	Options       DumpOptions
+}
+
+// RestoreRequest contains all inputs needed to restore a dump into a running
+// managed container.
+type RestoreRequest struct {
+	Docker        *client.Client
+	DumpPath      string
+	ContainerName string
+	Copy          CopyBootstrap
+}
+
 // CopyBootstrap describes the database users and TLS settings used to
 // initialize a copy or staging container.
 type CopyBootstrap struct {
@@ -67,14 +96,14 @@ type Engine interface {
 	// Dump writes a compressed dump of src to destPath through the configured
 	// Docker-compatible runtime. clientImage overrides the helper image used for
 	// the dump when non-empty. opts controls whether the dump includes row data.
-	Dump(ctx context.Context, docker *client.Client, clientImage string, src SourceConfig, destPath string, opts DumpOptions) error
+	Dump(ctx context.Context, req DumpRequest) error
 
 	// DumpFromContainer creates a compressed dump of the database running inside
 	// containerName and writes it to destPath on the host. The container must
 	// have its dump directory mounted at /dump (as copy and staging containers do).
 	// Used by the dump scheduler to bake obfuscation into the dump file.
 	// opts controls whether the dump includes row data.
-	DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, copy CopyBootstrap, opts DumpOptions) error
+	DumpFromContainer(ctx context.Context, req DumpFromContainerRequest) error
 
 	// ContainerSpec returns the environment variables and optional command line
 	// used to initialize the database inside a copy or staging container.
@@ -96,7 +125,7 @@ type Engine interface {
 	// Restore loads a dump file into a running container through the configured
 	// Docker-compatible runtime. containerName is the Docker container name
 	// (e.g. "ditto-<id>") as set by the copy manager.
-	Restore(ctx context.Context, docker *client.Client, dumpPath string, containerName string, copy CopyBootstrap) error
+	Restore(ctx context.Context, req RestoreRequest) error
 }
 
 // DefaultLocalBootstrap returns the standard credentials used for ephemeral

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/attaradev/ditto/engine"
 	"github.com/attaradev/ditto/internal/config"
 	"github.com/attaradev/ditto/internal/dump"
 	"github.com/attaradev/ditto/internal/store"
@@ -31,7 +32,12 @@ func TestSchedulerRunOnceBakesObfuscation(t *testing.T) {
 			}
 
 			copyDB := suite.StartCopy(dumpDir)
-			if err := suite.Engine.Restore(t.Context(), suite.Docker, dumpPath, copyDB.Name, copyDB.Bootstrap); err != nil {
+			if err := suite.Engine.Restore(t.Context(), engine.RestoreRequest{
+				Docker:        suite.Docker,
+				DumpPath:      dumpPath,
+				ContainerName: copyDB.Name,
+				Copy:          copyDB.Bootstrap,
+			}); err != nil {
 				t.Fatalf("Restore obfuscated dump: %v", err)
 			}
 
@@ -69,7 +75,12 @@ func TestSchedulerRunOnceWarnOnly(t *testing.T) {
 			}
 
 			copyDB := suite.StartCopy(dumpDir)
-			if err := suite.Engine.Restore(t.Context(), suite.Docker, passingDumpPath, copyDB.Name, copyDB.Bootstrap); err != nil {
+			if err := suite.Engine.Restore(t.Context(), engine.RestoreRequest{
+				Docker:        suite.Docker,
+				DumpPath:      passingDumpPath,
+				ContainerName: copyDB.Name,
+				Copy:          copyDB.Bootstrap,
+			}); err != nil {
 				t.Fatalf("Restore warn_only dump: %v", err)
 			}
 

@@ -157,7 +157,7 @@ Keep docs changes to these standards:
 Each engine is a self-contained package that registers itself at startup:
 
 1. Create `engine/{name}/{name}.go`.
-1. Implement all eight methods of `engine.Engine`.
+1. Implement all nine methods of `engine.Engine`.
 1. Add `func init() { engine.Register(&Engine{}) }`.
 1. Add a blank import in `cmd/ditto/main.go`:
 
@@ -171,18 +171,19 @@ _ "github.com/attaradev/ditto/engine/{name}"
 The `engine.Engine` interface is treated as stable. Do not add methods casually. Open an issue or
 design discussion first if you need to change it.
 
-The eight required methods are:
+The nine required methods are:
 
 | Method | Notes |
 | --- | --- |
 | `Name() string` | Key used in `ditto.yaml` under `source.engine` |
 | `ContainerImage() string` | Pin the image tag; never rely on `latest` |
-| `ContainerEnv() []string` | Environment needed to initialise a copy container |
-| `ConnectionString(host, port) string` | DSN for a copy using the fixed `ditto` credentials |
-| `Dump(...) error` | Produce a compressed dump from the configured source |
-| `DumpFromContainer(...) error` | Re-dump a running container, used when baking obfuscation |
-| `Restore(...) error` | Restore into a running copy container |
-| `WaitReady(port, timeout) error` | Block until the container accepts real connections |
+| `ContainerPort() int` | TCP port the database listens on inside the container |
+| `ContainerSpec(copy CopyBootstrap) ContainerSpec` | Environment variables and optional command line to bootstrap the container |
+| `ConnectionString(conn ConnectionConfig) string` | DSN for connecting to a running copy |
+| `Dump(ctx, req DumpRequest) error` | Produce a compressed dump from the configured source |
+| `DumpFromContainer(ctx, req DumpFromContainerRequest) error` | Re-dump a running container, used when baking obfuscation |
+| `Restore(ctx, req RestoreRequest) error` | Restore into a running copy container |
+| `WaitReady(conn ConnectionConfig, timeout time.Duration) error` | Block until the container accepts real connections |
 
 ## Code conventions
 

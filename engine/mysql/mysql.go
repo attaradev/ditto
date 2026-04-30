@@ -6,22 +6,18 @@ package mysql
 import (
 	"compress/gzip"
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path"
 	"path/filepath"
 	"time"
 
 	"github.com/attaradev/ditto/engine"
+	"github.com/attaradev/ditto/engine/internal/engineutil"
 	"github.com/attaradev/ditto/internal/dockerutil"
 	"github.com/attaradev/ditto/internal/secret"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -72,15 +68,12 @@ func (e *Engine) ConnectionString(conn engine.ConnectionConfig) string {
 // is passed so only DDL is captured.
 func (e *Engine) Dump(
 	ctx context.Context,
-	docker *client.Client,
-	clientImage string,
-	src engine.SourceConfig,
-	destPath string,
-	opts engine.DumpOptions,
+	req engine.DumpRequest,
 ) error {
-	if docker == nil {
-		return fmt.Errorf("mysql: docker runtime is required")
+	if err := engineutil.RequireDocker("mysql", req.Docker); err != nil {
+		return err
 	}
+	src := req.Source
 	if err := engine.ValidateSourceHost(src.Host); err != nil {
 		return fmt.Errorf("mysql: %w", err)
 	}
@@ -88,11 +81,9 @@ func (e *Engine) Dump(
 	if err != nil {
 		return fmt.Errorf("mysql: resolve password: %w", err)
 	}
-	if clientImage == "" {
-		clientImage = e.ContainerImage()
-	}
+	clientImage := engineutil.ClientImage(req.ClientImage, e.ContainerImage())
 
-	sqlDumpPath := destPath + ".sql"
+	sqlDumpPath := req.DestPath + ".sql"
 	cmd := []string{
 		"--single-transaction",
 		"--routines",
@@ -104,35 +95,19 @@ func (e *Engine) Dump(
 		"-u", src.User,
 		src.Database,
 	}
-	if opts.SchemaOnly {
+	if req.Options.SchemaOnly {
 		cmd = append(cmd, "--no-data")
 	}
 
-	var netCfg *network.NetworkingConfig
-	if src.NetworkName != "" {
-		netCfg = &network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{
-				src.NetworkName: {},
-			},
-		}
-	}
-	if err := dockerutil.RunContainerOnNetwork(ctx, docker,
+	if err := dockerutil.RunContainerOnNetwork(ctx, req.Docker,
 		&container.Config{
 			Image:      clientImage,
 			Entrypoint: []string{"mysqldump"},
 			Cmd:        cmd,
 			Env:        []string{"MYSQL_PWD=" + password},
 		},
-		&container.HostConfig{
-			Mounts: []mount.Mount{
-				{
-					Type:   mount.TypeBind,
-					Source: filepath.Dir(destPath),
-					Target: "/dump",
-				},
-			},
-		},
-		netCfg,
+		engineutil.DumpHostConfig(req.DestPath),
+		engineutil.NetworkConfig(src.NetworkName),
 		"",
 	); err != nil {
 		_ = os.Remove(sqlDumpPath)
@@ -142,8 +117,8 @@ func (e *Engine) Dump(
 		_ = os.Remove(sqlDumpPath)
 	}()
 
-	if err := gzipFile(sqlDumpPath, destPath); err != nil {
-		_ = os.Remove(destPath)
+	if err := gzipFile(sqlDumpPath, req.DestPath); err != nil {
+		_ = os.Remove(req.DestPath)
 		return err
 	}
 	return nil
@@ -153,11 +128,11 @@ func (e *Engine) Dump(
 // containerName is the Docker container name (e.g. "ditto-<id>") as set by the
 // copy manager. The manager calls WaitReady before Restore, so readiness is
 // already guaranteed when this method is invoked.
-func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath string, containerName string, copy engine.CopyBootstrap) error {
-	if docker == nil {
-		return fmt.Errorf("mysql: docker runtime is required")
+func (e *Engine) Restore(ctx context.Context, req engine.RestoreRequest) error {
+	if err := engineutil.RequireDocker("mysql", req.Docker); err != nil {
+		return err
 	}
-	f, err := os.Open(dumpPath)
+	f, err := os.Open(req.DumpPath)
 	if err != nil {
 		return fmt.Errorf("mysql: open dump file: %w", err)
 	}
@@ -173,8 +148,8 @@ func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath st
 		_ = gz.Close()
 	}()
 
-	if err := dockerutil.Exec(ctx, docker, containerName, []string{
-		"mysql", "-u", copy.User, "-p" + copy.Password, copy.Database,
+	if err := dockerutil.Exec(ctx, req.Docker, req.ContainerName, []string{
+		"mysql", "-u", req.Copy.User, "-p" + req.Copy.Password, req.Copy.Database,
 	}, gz); err != nil {
 		return fmt.Errorf("mysql: restore failed: %w", err)
 	}
@@ -185,29 +160,29 @@ func (e *Engine) Restore(ctx context.Context, docker *client.Client, dumpPath st
 // running inside containerName and writes it to destPath on the host.
 // The container must have its dump directory mounted at /dump (read-write).
 // When opts.SchemaOnly is true, --no-data is passed to mysqldump.
-func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, containerName string, destPath string, copy engine.CopyBootstrap, opts engine.DumpOptions) error {
-	if docker == nil {
-		return fmt.Errorf("mysql: docker runtime is required")
+func (e *Engine) DumpFromContainer(ctx context.Context, req engine.DumpFromContainerRequest) error {
+	if err := engineutil.RequireDocker("mysql", req.Docker); err != nil {
+		return err
 	}
-	sqlFile := filepath.Base(destPath) + ".sql"
+	sqlFile := filepath.Base(req.DestPath) + ".sql"
 	cmd := []string{
-		"mysqldump", "-u" + copy.User, "-p" + copy.Password,
+		"mysqldump", "-u" + req.Copy.User, "-p" + req.Copy.Password,
 		"--single-transaction", "--routines", "--triggers",
 		"--result-file=/dump/" + sqlFile,
-		copy.Database,
+		req.Copy.Database,
 	}
-	if opts.SchemaOnly {
+	if req.Options.SchemaOnly {
 		cmd = append(cmd, "--no-data")
 	}
-	if err := dockerutil.Exec(ctx, docker, containerName, cmd, nil); err != nil {
+	if err := dockerutil.Exec(ctx, req.Docker, req.ContainerName, cmd, nil); err != nil {
 		return fmt.Errorf("mysql: dump from container failed: %w", err)
 	}
 
-	hostSQLPath := filepath.Join(filepath.Dir(destPath), sqlFile)
+	hostSQLPath := filepath.Join(filepath.Dir(req.DestPath), sqlFile)
 	defer func() { _ = os.Remove(hostSQLPath) }()
 
-	if err := gzipFile(hostSQLPath, destPath); err != nil {
-		_ = os.Remove(destPath)
+	if err := gzipFile(hostSQLPath, req.DestPath); err != nil {
+		_ = os.Remove(req.DestPath)
 		return err
 	}
 	return nil
@@ -215,38 +190,13 @@ func (e *Engine) DumpFromContainer(ctx context.Context, docker *client.Client, c
 
 // WaitReady polls port until MySQL is accepting connections.
 func (e *Engine) WaitReady(conn engine.ConnectionConfig, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	addr := net.JoinHostPort(conn.Host, fmt.Sprintf("%d", conn.Port))
-
-	for time.Now().Before(deadline) {
-		tcpConn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
-		if err == nil {
-			_ = tcpConn.Close()
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	if time.Now().After(deadline) {
-		return fmt.Errorf("mysql: timed out waiting for TCP on port %d", conn.Port)
-	}
-
-	dsn := e.ConnectionString(conn)
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return fmt.Errorf("mysql: open readiness probe DB: %w", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_, err := db.ExecContext(ctx, "SELECT 1")
-		cancel()
-		if err == nil {
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("mysql: timed out waiting for SELECT 1 on port %d", conn.Port)
+	return engineutil.WaitReady(engineutil.ReadyRequest{
+		Prefix:     "mysql",
+		DriverName: "mysql",
+		Connection: conn,
+		Timeout:    timeout,
+		DSN:        e.ConnectionString(conn),
+	})
 }
 
 var _ engine.Engine = (*Engine)(nil)

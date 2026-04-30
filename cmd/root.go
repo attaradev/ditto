@@ -54,58 +54,14 @@ Use it when shared staging databases make test runs flaky, schema fidelity matte
 	root.PersistentFlags().StringVar(&cfgPath, "config", "", "Path to ditto.yaml (otherwise search ./ditto.yaml, ~/.ditto/ditto.yaml, /etc/ditto/ditto.yaml)")
 
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		// Skip for help/completion.
-		if cmd.Name() == "help" || cmd.Name() == "__complete" {
+		if skipLocalInit(cmd) {
 			return nil
 		}
 
-		// Open SQLite.
-		db, err := dittostore.Open(dbPath)
+		ctx, err := initializeLocalContext(cmd.Context(), dbPath, cfgPath)
 		if err != nil {
-			return fmt.Errorf("open store: %w", err)
+			return err
 		}
-
-		cs := dittostore.NewCopyStore(db)
-		es := dittostore.NewEventStore(db)
-
-		ctx := context.WithValue(cmd.Context(), keyDB, db)
-		ctx = context.WithValue(ctx, keyCopyStore, cs)
-		ctx = context.WithValue(ctx, keyEventStore, es)
-
-		// Load config (best-effort — some commands don't need it).
-		cfg, cfgErr := config.Load(cfgPath)
-		if cfgErr != nil {
-			ctx = context.WithValue(ctx, keyLocalInitErr, cfgErr)
-		}
-		if cfg != nil {
-			ctx = context.WithValue(ctx, keyConfig, cfg)
-
-			// Initialise copy manager and dump scheduler when config is available.
-			eng, engErr := engineFromConfig(cfg)
-			if engErr != nil {
-				ctx = context.WithValue(ctx, keyLocalInitErr, engErr)
-			} else if cfgErr == nil {
-				docker, _, dockerErr := dockerutil.NewClient(ctx, cfg.DockerHost)
-				if dockerErr != nil {
-					ctx = context.WithValue(ctx, keyLocalInitErr, dockerErr)
-				} else {
-					// Load occupied ports from SQLite.
-					occupied := occupiedPorts(cs)
-					pool := copypkg.NewPortPool(cfg.PortPoolStart, cfg.PortPoolEnd, occupied)
-
-					mgr, mgrErr := copypkg.NewManager(cfg, eng, cs, es, pool, docker)
-					if mgrErr != nil {
-						ctx = context.WithValue(ctx, keyLocalInitErr, mgrErr)
-					} else {
-						ctx = context.WithValue(ctx, keyManager, mgr)
-					}
-
-					sched := dumppkg.New(cfg, eng, es, docker)
-					ctx = context.WithValue(ctx, keyScheduler, sched)
-				}
-			}
-		}
-
 		cmd.SetContext(ctx)
 		return nil
 	}
@@ -124,6 +80,85 @@ Use it when shared staging databases make test runs flaky, schema fidelity matte
 	return root
 }
 
+func skipLocalInit(cmd *cobra.Command) bool {
+	return cmd.Name() == "help" || cmd.Name() == "__complete"
+}
+
+func initializeLocalContext(ctx context.Context, dbPath, cfgPath string) (context.Context, error) {
+	db, err := dittostore.Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+
+	cs := dittostore.NewCopyStore(db)
+	es := dittostore.NewEventStore(db)
+	ctx = context.WithValue(ctx, keyDB, db)
+	ctx = context.WithValue(ctx, keyCopyStore, cs)
+	ctx = context.WithValue(ctx, keyEventStore, es)
+
+	cfg, cfgErr := config.Load(cfgPath)
+	if cfgErr != nil {
+		ctx = storeLocalInitError(ctx, cfgErr)
+	}
+	if cfg == nil {
+		return ctx, nil
+	}
+
+	ctx = context.WithValue(ctx, keyConfig, cfg)
+	if cfgErr != nil {
+		return ctx, nil
+	}
+	return initializeLocalServices(ctx, cfg, localStores{
+		copies: cs,
+		events: es,
+	}), nil
+}
+
+type localStores struct {
+	copies *dittostore.CopyStore
+	events *dittostore.EventStore
+}
+
+func initializeLocalServices(ctx context.Context, cfg *config.Config, stores localStores) context.Context {
+	eng, err := engineFromConfig(cfg)
+	if err != nil {
+		return storeLocalInitError(ctx, err)
+	}
+
+	docker, _, err := dockerutil.NewClient(ctx, cfg.DockerHost)
+	if err != nil {
+		return storeLocalInitError(ctx, err)
+	}
+
+	pool := copypkg.NewPortPool(cfg.PortPoolStart, cfg.PortPoolEnd, occupiedPorts(stores.copies))
+	mgr, err := copypkg.NewManager(copypkg.ManagerDeps{
+		Config:     cfg,
+		Engine:     eng,
+		CopyStore:  stores.copies,
+		EventStore: stores.events,
+		PortPool:   pool,
+		Docker:     docker,
+	})
+	if err != nil {
+		ctx = storeLocalInitError(ctx, err)
+	} else {
+		ctx = context.WithValue(ctx, keyManager, mgr)
+	}
+
+	sched := dumppkg.New(cfg, eng, stores.events, docker)
+	return context.WithValue(ctx, keyScheduler, sched)
+}
+
+func storeLocalInitError(ctx context.Context, err error) context.Context {
+	if err == nil {
+		return ctx
+	}
+	if existing, ok := ctx.Value(keyLocalInitErr).(error); ok && existing != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, keyLocalInitErr, err)
+}
+
 // --- context accessors ---
 
 func copyStoreFromContext(cmd *cobra.Command) *dittostore.CopyStore {
@@ -137,12 +172,7 @@ func eventStoreFromContext(cmd *cobra.Command) *dittostore.EventStore {
 func managerFromContext(cmd *cobra.Command) *copypkg.Manager {
 	v := cmd.Context().Value(keyManager)
 	if v == nil {
-		fmt.Fprintln(os.Stderr, "error:", localInitError(cmd))
-		fmt.Fprintln(os.Stderr, "\nQuick fixes:")
-		fmt.Fprintln(os.Stderr, "  • Set DITTO_SOURCE_URL=<connection-string> (and DITTO_DUMP_PATH only if you want a non-default dump path)")
-		fmt.Fprintln(os.Stderr, "  • Or run: ditto init   (generates ./ditto.yaml from your source DB)")
-		fmt.Fprintln(os.Stderr, "  • Or run: ditto doctor (diagnoses config, Docker, and dump issues)")
-		os.Exit(1)
+		exitWithLocalInitError(cmd)
 	}
 	return v.(*copypkg.Manager)
 }
@@ -150,12 +180,7 @@ func managerFromContext(cmd *cobra.Command) *copypkg.Manager {
 func schedulerFromContext(cmd *cobra.Command) *dumppkg.Scheduler {
 	v := cmd.Context().Value(keyScheduler)
 	if v == nil {
-		fmt.Fprintln(os.Stderr, "error:", localInitError(cmd))
-		fmt.Fprintln(os.Stderr, "\nQuick fixes:")
-		fmt.Fprintln(os.Stderr, "  • Set DITTO_SOURCE_URL=<connection-string> (and DITTO_DUMP_PATH only if you want a non-default dump path)")
-		fmt.Fprintln(os.Stderr, "  • Or run: ditto init   (generates ./ditto.yaml from your source DB)")
-		fmt.Fprintln(os.Stderr, "  • Or run: ditto doctor (diagnoses config, Docker, and dump issues)")
-		os.Exit(1)
+		exitWithLocalInitError(cmd)
 	}
 	return v.(*dumppkg.Scheduler)
 }
@@ -190,6 +215,15 @@ func localInitError(cmd *cobra.Command) error {
 		return err
 	}
 	return fmt.Errorf("ditto.yaml not found or missing required fields — run with a valid config")
+}
+
+func exitWithLocalInitError(cmd *cobra.Command) {
+	fmt.Fprintln(os.Stderr, "error:", localInitError(cmd))
+	fmt.Fprintln(os.Stderr, "\nQuick fixes:")
+	fmt.Fprintln(os.Stderr, "  • Set DITTO_SOURCE_URL=<connection-string> (and DITTO_DUMP_PATH only if you want a non-default dump path)")
+	fmt.Fprintln(os.Stderr, "  • Or run: ditto init   (generates ./ditto.yaml from your source DB)")
+	fmt.Fprintln(os.Stderr, "  • Or run: ditto doctor (diagnoses config, Docker, and dump issues)")
+	os.Exit(1)
 }
 
 func occupiedPorts(cs *dittostore.CopyStore) []int {

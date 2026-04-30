@@ -40,45 +40,40 @@ type Manager struct {
 	runtime  RemoteRuntimeConfig
 }
 
+// ManagerDeps contains the resolved dependencies needed by Manager.
+type ManagerDeps struct {
+	Config     *config.Config
+	Engine     engine.Engine
+	CopyStore  *store.CopyStore
+	EventStore *store.EventStore
+	PortPool   *PortPool
+	Docker     *client.Client
+}
+
 // NewManager creates a Manager from an already-resolved Docker-compatible
 // runtime client.
-func NewManager(
-	cfg *config.Config,
-	eng engine.Engine,
-	copies *store.CopyStore,
-	events *store.EventStore,
-	ports *PortPool,
-	docker *client.Client,
-) (*Manager, error) {
-	if docker == nil {
+func NewManager(deps ManagerDeps) (*Manager, error) {
+	if deps.Docker == nil {
 		return nil, fmt.Errorf("copy: docker runtime is required")
 	}
 	m := &Manager{
-		cfg:    cfg,
-		eng:    eng,
-		copies: copies,
-		events: events,
-		ports:  ports,
-		docker: docker,
+		cfg:    deps.Config,
+		eng:    deps.Engine,
+		copies: deps.CopyStore,
+		events: deps.EventStore,
+		ports:  deps.PortPool,
+		docker: deps.Docker,
 		runtime: RemoteRuntimeConfig{
 			Mode: AccessModeLocal,
 		},
 	}
-	m.refiller = NewWarmPoolRefiller(m, cfg.WarmPoolSize)
+	m.refiller = NewWarmPoolRefiller(m, deps.Config.WarmPoolSize)
 	return m, nil
 }
 
 // NewRemoteManager creates a Manager configured for shared-host mode.
-func NewRemoteManager(
-	cfg *config.Config,
-	eng engine.Engine,
-	copies *store.CopyStore,
-	events *store.EventStore,
-	ports *PortPool,
-	docker *client.Client,
-	runtime RemoteRuntimeConfig,
-) (*Manager, error) {
-	m, err := NewManager(cfg, eng, copies, events, ports, docker)
+func NewRemoteManager(deps ManagerDeps, runtime RemoteRuntimeConfig) (*Manager, error) {
+	m, err := NewManager(deps)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +131,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (*store.Copy, 
 	}
 
 	// Slow path: full dump-and-restore provisioning.
-	return m.provision(ctx, opts, ttl, false)
+	return m.provision(ctx, provisionRequest{opts: opts, ttl: ttl})
 }
 
 // List returns all copies regardless of status, newest first.
@@ -241,16 +236,19 @@ func (m *Manager) RecoverOrphans(ctx context.Context) error {
 // provisionWarm creates a warm copy for the pool. It sets Warm=true and uses
 // TTLSeconds=0 (TTL clock starts at claim time, not provision time).
 func (m *Manager) provisionWarm(ctx context.Context) (*store.Copy, error) {
-	return m.provision(ctx, CreateOptions{}, 0, true)
+	return m.provision(ctx, provisionRequest{warm: true})
+}
+
+type provisionRequest struct {
+	opts CreateOptions
+	ttl  int
+	warm bool
 }
 
 // provision is the shared slow-path provisioning logic used by Create and
 // provisionWarm. warm=true marks the copy for pool pre-warming.
-func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, warm bool) (*store.Copy, error) {
-	dumpPath := m.cfg.Dump.Path
-	if opts.DumpPath != "" {
-		dumpPath = opts.DumpPath
-	}
+func (m *Manager) provision(ctx context.Context, req provisionRequest) (*store.Copy, error) {
+	dumpPath := m.resolveDumpPath(req.opts)
 	if err := checkDump(dumpPath, m.cfg.Dump.StaleThreshold); err != nil {
 		return nil, err
 	}
@@ -261,16 +259,7 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 	}
 
 	id := ulid.Make().String()
-	c := &store.Copy{
-		ID:           id,
-		Status:       store.StatusPending,
-		Port:         port,
-		OwnerSubject: opts.OwnerSubject,
-		RunID:        opts.RunID,
-		JobName:      opts.JobName,
-		TTLSeconds:   ttl,
-		Warm:         warm,
-	}
+	c := newCopyRecord(id, port, req)
 
 	copyRuntime, err := m.copyRuntime(id, port)
 	if err != nil {
@@ -278,144 +267,161 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 		return nil, err
 	}
 
-	// Cleanup on any error after port allocation.
-	var containerStarted bool
-	cleanup := func(cause error) {
-		if containerStarted {
-			_ = m.docker.ContainerStop(context.Background(), containerName(id), container.StopOptions{Timeout: intPtr(10)})
-			_ = m.docker.ContainerRemove(context.Background(), containerName(id), container.RemoveOptions{Force: true})
-		}
-		m.ports.Release(port)
-		if c.ID != "" {
-			_ = m.copies.UpdateStatus(id, store.StatusFailed, store.WithErrorMessage(cause.Error()))
-			_ = m.events.Append("copy", id, "failed", actor, map[string]any{"error": cause.Error()})
-		}
-	}
-
 	if err := m.copies.Create(c); err != nil {
 		m.ports.Release(port)
 		return nil, fmt.Errorf("copy.Create record: %w", err)
 	}
-	_ = m.events.Append("copy", id, "created", actor, map[string]any{"port": port, "warm": warm})
+	_ = m.events.Append("copy", id, "created", actor, map[string]any{"port": port, "warm": req.warm})
 
-	// Start the container.
-	containerID, err := m.startContainer(ctx, id, dumpPath, copyRuntime)
+	cleanup := provisionCleanup{manager: m, id: id, port: port}
+	containerID, err := m.startContainer(ctx, startContainerRequest{
+		id:          id,
+		dumpPath:    dumpPath,
+		copyRuntime: copyRuntime,
+	})
 	if err != nil {
-		cleanup(err)
+		cleanup.run(err)
 		return nil, fmt.Errorf("copy.Create start container: %w", err)
 	}
-	containerStarted = true
+	cleanup.containerStarted = true
 
-	if err := m.copies.UpdateStatus(id, store.StatusCreating, store.WithContainerID(containerID)); err != nil {
-		cleanup(err)
+	if err := m.markCreating(id, containerID); err != nil {
+		cleanup.run(err)
 		return nil, err
 	}
-	_ = m.events.Append("copy", id, "started", actor, map[string]any{"container_id": containerID})
 
-	// Wait for the engine.
 	if err := m.eng.WaitReady(copyRuntime.Internal, 2*time.Minute); err != nil {
-		cleanup(err)
+		cleanup.run(err)
 		return nil, fmt.Errorf("copy.Create wait ready: %w", err)
 	}
 
-	// Restore the dump.
-	if err := m.eng.Restore(ctx, m.docker, dumpPath, containerName(id), copyRuntime.Bootstrap); err != nil {
-		cleanup(err)
+	if err := m.restoreDump(ctx, id, dumpPath, copyRuntime); err != nil {
+		cleanup.run(err)
 		return nil, fmt.Errorf("copy.Create restore: %w", err)
 	}
 
-	// Apply post-restore obfuscation only when explicitly requested via --obfuscate.
-	// Standard copies skip this because ditto reseed already bakes rules into the dump.
-	if opts.Obfuscate && len(m.cfg.Obfuscation.Rules) > 0 {
-		connStr := m.eng.ConnectionString(copyRuntime.Internal)
-		obf := obfuscation.New(m.eng.Name(), connStr, m.cfg.Obfuscation.Rules)
-		if err := obf.Apply(ctx); err != nil {
-			cleanup(err)
-			return nil, fmt.Errorf("copy.Create obfuscate: %w", err)
-		}
+	if err := m.applyPostRestoreObfuscation(ctx, req.opts, copyRuntime); err != nil {
+		cleanup.run(err)
+		return nil, fmt.Errorf("copy.Create obfuscate: %w", err)
 	}
 
+	if err := m.markReady(c, readyCopy{
+		containerID: containerID,
+		copyRuntime: copyRuntime,
+		warm:        req.warm,
+	}); err != nil {
+		cleanup.run(err)
+		return nil, err
+	}
+	return c, nil
+}
+
+func (m *Manager) resolveDumpPath(opts CreateOptions) string {
+	if opts.DumpPath != "" {
+		return opts.DumpPath
+	}
+	return m.cfg.Dump.Path
+}
+
+func newCopyRecord(id string, port int, req provisionRequest) *store.Copy {
+	return &store.Copy{
+		ID:           id,
+		Status:       store.StatusPending,
+		Port:         port,
+		OwnerSubject: req.opts.OwnerSubject,
+		RunID:        req.opts.RunID,
+		JobName:      req.opts.JobName,
+		TTLSeconds:   req.ttl,
+		Warm:         req.warm,
+	}
+}
+
+type provisionCleanup struct {
+	manager          *Manager
+	id               string
+	port             int
+	containerStarted bool
+}
+
+func (c provisionCleanup) run(cause error) {
+	if c.containerStarted {
+		_ = c.manager.docker.ContainerStop(context.Background(), containerName(c.id), container.StopOptions{Timeout: intPtr(10)})
+		_ = c.manager.docker.ContainerRemove(context.Background(), containerName(c.id), container.RemoveOptions{Force: true})
+	}
+	c.manager.ports.Release(c.port)
+	_ = c.manager.copies.UpdateStatus(c.id, store.StatusFailed, store.WithErrorMessage(cause.Error()))
+	_ = c.manager.events.Append("copy", c.id, "failed", actor, map[string]any{"error": cause.Error()})
+}
+
+func (m *Manager) markCreating(id, containerID string) error {
+	if err := m.copies.UpdateStatus(id, store.StatusCreating, store.WithContainerID(containerID)); err != nil {
+		return err
+	}
+	_ = m.events.Append("copy", id, "started", actor, map[string]any{"container_id": containerID})
+	return nil
+}
+
+func (m *Manager) restoreDump(ctx context.Context, id, dumpPath string, copyRuntime CopyRuntime) error {
+	return m.eng.Restore(ctx, engine.RestoreRequest{
+		Docker:        m.docker,
+		DumpPath:      dumpPath,
+		ContainerName: containerName(id),
+		Copy:          copyRuntime.Bootstrap,
+	})
+}
+
+func (m *Manager) applyPostRestoreObfuscation(ctx context.Context, opts CreateOptions, copyRuntime CopyRuntime) error {
+	if !opts.Obfuscate || len(m.cfg.Obfuscation.Rules) == 0 {
+		return nil
+	}
+	connStr := m.eng.ConnectionString(copyRuntime.Internal)
+	return obfuscation.New(m.eng.Name(), connStr, m.cfg.Obfuscation.Rules).Apply(ctx)
+}
+
+type readyCopy struct {
+	containerID string
+	copyRuntime CopyRuntime
+	warm        bool
+}
+
+func (m *Manager) markReady(c *store.Copy, ready readyCopy) error {
 	now := time.Now()
-	connStr := m.eng.ConnectionString(copyRuntime.External)
-	if err := m.copies.UpdateStatus(id, store.StatusReady,
+	connStr := m.eng.ConnectionString(ready.copyRuntime.External)
+	if err := m.copies.UpdateStatus(c.ID, store.StatusReady,
 		store.WithConnectionString(connStr),
 		store.WithReadyAt(now),
 	); err != nil {
-		cleanup(err)
-		return nil, err
+		return err
 	}
-	_ = m.events.Append("copy", id, "ready", actor, map[string]any{"warm": warm})
+	_ = m.events.Append("copy", c.ID, "ready", actor, map[string]any{"warm": ready.warm})
 
 	c.Status = store.StatusReady
-	c.ContainerID = containerID
+	c.ContainerID = ready.containerID
 	c.ConnectionString = connStr
 	c.ReadyAt = &now
-	return c, nil
+	return nil
 }
 
 // startContainer creates and starts a Docker container for the copy.
 // It bind-mounts the dump directory read-only at /dump.
-func (m *Manager) startContainer(ctx context.Context, id string, dumpPath string, copyRuntime CopyRuntime) (string, error) {
-	dumpDir := filepath.Dir(dumpPath)
-	hostPortStr := fmt.Sprintf("%d", copyRuntime.External.Port)
-	exposedPort := nat.Port(fmt.Sprintf("%d/tcp", m.eng.ContainerPort()))
+type startContainerRequest struct {
+	id          string
+	dumpPath    string
+	copyRuntime CopyRuntime
+}
 
-	image := m.cfg.CopyImage
-	if image == "" {
-		image = m.eng.ContainerImage()
-	}
+func (m *Manager) startContainer(ctx context.Context, req startContainerRequest) (string, error) {
+	exposedPort := nat.Port(fmt.Sprintf("%d/tcp", m.eng.ContainerPort()))
+	image := m.copyImage()
 	if err := dockerutil.EnsureImage(ctx, m.docker, image); err != nil {
 		return "", fmt.Errorf("container image %s: %w", image, err)
 	}
-	spec := m.eng.ContainerSpec(copyRuntime.Bootstrap)
-	mounts := []mount.Mount{
-		{
-			Type:     mount.TypeBind,
-			Source:   dumpDir,
-			Target:   "/dump",
-			ReadOnly: true,
-		},
-	}
-	if copyRuntime.Bootstrap.TLSEnabled {
-		mounts = append(mounts,
-			mount.Mount{
-				Type:     mount.TypeBind,
-				Source:   m.runtime.CertFile,
-				Target:   "/run/ditto/tls/server.crt",
-				ReadOnly: true,
-			},
-			mount.Mount{
-				Type:     mount.TypeBind,
-				Source:   m.runtime.KeyFile,
-				Target:   "/run/ditto/tls/server.key",
-				ReadOnly: true,
-			},
-		)
-	}
 
 	resp, err := m.docker.ContainerCreate(ctx,
-		&container.Config{
-			Image: image,
-			Env:   spec.Env,
-			Cmd:   spec.Cmd,
-			ExposedPorts: nat.PortSet{
-				exposedPort: struct{}{},
-			},
-			Labels: map[string]string{
-				labelManaged: "true",
-				labelCopyID:  id,
-			},
-		},
-		&container.HostConfig{
-			PortBindings: nat.PortMap{
-				exposedPort: []nat.PortBinding{
-					{HostIP: copyRuntime.BindHost, HostPort: hostPortStr},
-				},
-			},
-			Mounts: mounts,
-		},
+		m.containerConfig(req, image, exposedPort),
+		m.hostConfig(req, exposedPort),
 		nil, nil,
-		containerName(id),
+		containerName(req.id),
 	)
 	if err != nil {
 		return "", fmt.Errorf("container create: %w", err)
@@ -426,6 +432,68 @@ func (m *Manager) startContainer(ctx context.Context, id string, dumpPath string
 		return "", fmt.Errorf("container start: %w", err)
 	}
 	return resp.ID, nil
+}
+
+func (m *Manager) copyImage() string {
+	if m.cfg.CopyImage != "" {
+		return m.cfg.CopyImage
+	}
+	return m.eng.ContainerImage()
+}
+
+func (m *Manager) containerConfig(req startContainerRequest, image string, exposedPort nat.Port) *container.Config {
+	spec := m.eng.ContainerSpec(req.copyRuntime.Bootstrap)
+	return &container.Config{
+		Image: image,
+		Env:   spec.Env,
+		Cmd:   spec.Cmd,
+		ExposedPorts: nat.PortSet{
+			exposedPort: struct{}{},
+		},
+		Labels: map[string]string{
+			labelManaged: "true",
+			labelCopyID:  req.id,
+		},
+	}
+}
+
+func (m *Manager) hostConfig(req startContainerRequest, exposedPort nat.Port) *container.HostConfig {
+	return &container.HostConfig{
+		PortBindings: nat.PortMap{
+			exposedPort: []nat.PortBinding{
+				{HostIP: req.copyRuntime.BindHost, HostPort: fmt.Sprintf("%d", req.copyRuntime.External.Port)},
+			},
+		},
+		Mounts: m.copyMounts(req),
+	}
+}
+
+func (m *Manager) copyMounts(req startContainerRequest) []mount.Mount {
+	mounts := []mount.Mount{
+		{
+			Type:     mount.TypeBind,
+			Source:   filepath.Dir(req.dumpPath),
+			Target:   "/dump",
+			ReadOnly: true,
+		},
+	}
+	if !req.copyRuntime.Bootstrap.TLSEnabled {
+		return mounts
+	}
+	return append(mounts,
+		mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   m.runtime.CertFile,
+			Target:   "/run/ditto/tls/server.crt",
+			ReadOnly: true,
+		},
+		mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   m.runtime.KeyFile,
+			Target:   "/run/ditto/tls/server.key",
+			ReadOnly: true,
+		},
+	)
 }
 
 func containerName(id string) string { return "ditto-" + id }

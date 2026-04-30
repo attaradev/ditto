@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/attaradev/ditto/engine"
-	"github.com/docker/docker/client"
 )
 
 type stubEngine struct{ name string }
@@ -21,13 +20,13 @@ func (s *stubEngine) ContainerPort() int { return 1234 }
 func (s *stubEngine) ConnectionString(conn engine.ConnectionConfig) string {
 	return fmt.Sprintf("stub://%s:%d", conn.Host, conn.Port)
 }
-func (s *stubEngine) Dump(_ context.Context, _ *client.Client, _ string, _ engine.SourceConfig, _ string, _ engine.DumpOptions) error {
+func (s *stubEngine) Dump(_ context.Context, _ engine.DumpRequest) error {
 	return nil
 }
-func (s *stubEngine) Restore(_ context.Context, _ *client.Client, _ string, _ string, _ engine.CopyBootstrap) error {
+func (s *stubEngine) Restore(_ context.Context, _ engine.RestoreRequest) error {
 	return nil
 }
-func (s *stubEngine) DumpFromContainer(_ context.Context, _ *client.Client, _ string, _ string, _ engine.CopyBootstrap, _ engine.DumpOptions) error {
+func (s *stubEngine) DumpFromContainer(_ context.Context, _ engine.DumpFromContainerRequest) error {
 	return nil
 }
 func (s *stubEngine) WaitReady(_ engine.ConnectionConfig, _ time.Duration) error { return nil }

@@ -54,7 +54,7 @@ ditto init
 # edit ditto.yaml to add obfuscation rules and adjust any settings
 ```
 
-## 2.5. Verify your setup
+## 3. Verify your setup
 
 ```bash
 ditto doctor
@@ -63,7 +63,7 @@ ditto doctor
 This checks Docker reachability, configuration completeness, and source database connectivity. Fix
 any red items before continuing.
 
-## 3. Create the first dump
+## 4. Create the first dump
 
 ```bash
 ditto reseed
@@ -73,7 +73,7 @@ This writes the compressed dump to your configured dump path and only replaces t
 after a successful refresh. If you did not set `dump.path`, ditto uses its built-in default under
 your home directory.
 
-## 4. Run one command against a fresh copy
+## 5. Run one command against a fresh copy
 
 ```bash
 ditto copy run -- env | grep '^DATABASE_URL='
@@ -87,7 +87,7 @@ all of the following:
 - ditto injected the connection string into the child process
 - ditto cleaned up the copy when the command exited
 
-## 5. Confirm host state
+## 6. Confirm host state
 
 ```bash
 ditto status

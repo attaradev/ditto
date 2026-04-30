@@ -21,12 +21,21 @@ func TestPostgresDumpRestoreCycle(t *testing.T) {
 
 	dumpDir := t.TempDir()
 	dumpPath := dumpDir + "/dump.pgc"
-	if err := eng.Dump(ctx, suite.Docker, "", srcDB.NetworkSourceConfig(), dumpPath, engine.DumpOptions{}); err != nil {
+	if err := eng.Dump(ctx, engine.DumpRequest{
+		Docker:   suite.Docker,
+		Source:   srcDB.NetworkSourceConfig(),
+		DestPath: dumpPath,
+	}); err != nil {
 		t.Fatalf("Dump: %v", err)
 	}
 
 	copyDB := suite.StartCopy(dumpDir)
-	if err := eng.Restore(ctx, suite.Docker, dumpPath, copyDB.Name, copyDB.Bootstrap); err != nil {
+	if err := eng.Restore(ctx, engine.RestoreRequest{
+		Docker:        suite.Docker,
+		DumpPath:      dumpPath,
+		ContainerName: copyDB.Name,
+		Copy:          copyDB.Bootstrap,
+	}); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
@@ -42,12 +51,22 @@ func TestPostgresSchemaOnlyDump(t *testing.T) {
 
 	dumpDir := t.TempDir()
 	dumpPath := dumpDir + "/schema.pgc"
-	if err := eng.Dump(ctx, suite.Docker, "", srcDB.NetworkSourceConfig(), dumpPath, engine.DumpOptions{SchemaOnly: true}); err != nil {
+	if err := eng.Dump(ctx, engine.DumpRequest{
+		Docker:   suite.Docker,
+		Source:   srcDB.NetworkSourceConfig(),
+		DestPath: dumpPath,
+		Options:  engine.DumpOptions{SchemaOnly: true},
+	}); err != nil {
 		t.Fatalf("Dump schema-only: %v", err)
 	}
 
 	copyDB := suite.StartCopy(dumpDir)
-	if err := eng.Restore(ctx, suite.Docker, dumpPath, copyDB.Name, copyDB.Bootstrap); err != nil {
+	if err := eng.Restore(ctx, engine.RestoreRequest{
+		Docker:        suite.Docker,
+		DumpPath:      dumpPath,
+		ContainerName: copyDB.Name,
+		Copy:          copyDB.Bootstrap,
+	}); err != nil {
 		t.Fatalf("Restore schema-only: %v", err)
 	}
 

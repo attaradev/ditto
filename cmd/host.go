@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -50,54 +51,14 @@ func runHost(cmd *cobra.Command) error {
 	es := eventStoreFromContext(cmd)
 	ctx := cmd.Context()
 
-	eng, err := engineFromConfig(cfg)
-	if err != nil {
-		return err
-	}
-	docker, _, err := dockerutil.NewClient(ctx, cfg.DockerHost)
+	mgr, sched, refresher, err := buildHostServices(ctx, cfg, cs, es)
 	if err != nil {
 		return err
 	}
 
-	var secretCache secret.Cache
-	copySecret, err := secretCache.Resolve(ctx, cfg.Server.CopySecretSecret, "")
-	if err != nil {
-		return fmt.Errorf("host: resolve copy secret: %w", err)
-	}
-
-	pool := copypkg.NewPortPool(cfg.PortPoolStart, cfg.PortPoolEnd, occupiedPorts(cs))
-	runtime := copypkg.RemoteRuntimeConfig{
-		Mode:          copypkg.AccessModeRemote,
-		AdvertiseHost: cfg.Server.AdvertiseHost,
-		BindHost:      cfg.Server.DBBindHost,
-		CopySecret:    copySecret,
-		TLSEnabled:    cfg.Server.DBTLS.CertFile != "" && cfg.Server.DBTLS.KeyFile != "",
-		CertFile:      cfg.Server.DBTLS.CertFile,
-		KeyFile:       cfg.Server.DBTLS.KeyFile,
-	}
-	mgr, err := copypkg.NewRemoteManager(cfg, eng, cs, es, pool, docker, runtime)
+	authn, err := buildAuthenticator(ctx, cfg)
 	if err != nil {
 		return err
-	}
-	sched := dumppkg.New(cfg, eng, es, docker)
-
-	var authn server.Authenticator
-	if cfg.Server.Auth.StaticToken != "" {
-		var sc secret.Cache
-		tok, err := sc.Resolve(ctx, cfg.Server.Auth.StaticToken, "")
-		if err != nil {
-			return fmt.Errorf("host: resolve static token: %w", err)
-		}
-		slog.Warn("host: static token auth enabled — suitable for evaluation only; configure OIDC for production")
-		authn = oidc.NewStaticToken(tok)
-	} else {
-		authn = oidc.New(oidc.Config{
-			Issuer:     cfg.Server.Auth.Issuer,
-			Audience:   cfg.Server.Auth.Audience,
-			JWKSURL:    cfg.Server.Auth.JWKSURL,
-			AdminClaim: cfg.Server.Auth.AdminClaim,
-			AdminValue: cfg.Server.Auth.AdminValue,
-		})
 	}
 
 	slog.Info("host: recovering orphans")
@@ -110,11 +71,16 @@ func runHost(cmd *cobra.Command) error {
 	if err := sched.Start(); err != nil {
 		return fmt.Errorf("host: start scheduler: %w", err)
 	}
+	defer sched.Stop()
 	slog.Info("host: dump scheduler started")
 
-	refresher := refresh.New(cfg, es, docker)
 	srv := server.New(cfg.Server.Addr, mgr, refresher, cs, es, authn, makeStatusFn(cs, cfg))
 
+	slog.Info("host: running", "addr", cfg.Server.Addr, "advertise_host", cfg.Server.AdvertiseHost)
+	return runEventLoop(ctx, srv, mgr)
+}
+
+func runEventLoop(ctx context.Context, srv *server.Server, mgr *copypkg.Manager) error {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(stop)
@@ -125,7 +91,6 @@ func runHost(cmd *cobra.Command) error {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
-	slog.Info("host: running", "addr", cfg.Server.Addr, "advertise_host", cfg.Server.AdvertiseHost)
 	for {
 		select {
 		case <-ticker.C:
@@ -134,16 +99,70 @@ func runHost(cmd *cobra.Command) error {
 			}
 		case sig := <-stop:
 			slog.Info("host: shutting down", "signal", sig)
-			sched.Stop()
 			return nil
 		case err := <-errCh:
-			sched.Stop()
 			return err
 		case <-ctx.Done():
-			sched.Stop()
 			return ctx.Err()
 		}
 	}
+}
+
+func buildHostServices(ctx context.Context, cfg *config.Config, cs *dittostore.CopyStore, es *dittostore.EventStore) (*copypkg.Manager, *dumppkg.Scheduler, *refresh.Service, error) {
+	eng, err := engineFromConfig(cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	docker, _, err := dockerutil.NewClient(ctx, cfg.DockerHost)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var secretCache secret.Cache
+	copySecret, err := secretCache.Resolve(ctx, cfg.Server.CopySecretSecret, "")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("host: resolve copy secret: %w", err)
+	}
+	pool := copypkg.NewPortPool(cfg.PortPoolStart, cfg.PortPoolEnd, occupiedPorts(cs))
+	runtime := copypkg.RemoteRuntimeConfig{
+		Mode:          copypkg.AccessModeRemote,
+		AdvertiseHost: cfg.Server.AdvertiseHost,
+		BindHost:      cfg.Server.DBBindHost,
+		CopySecret:    copySecret,
+		TLSEnabled:    cfg.Server.DBTLS.CertFile != "" && cfg.Server.DBTLS.KeyFile != "",
+		CertFile:      cfg.Server.DBTLS.CertFile,
+		KeyFile:       cfg.Server.DBTLS.KeyFile,
+	}
+	mgr, err := copypkg.NewRemoteManager(copypkg.ManagerDeps{
+		Config:     cfg,
+		Engine:     eng,
+		CopyStore:  cs,
+		EventStore: es,
+		PortPool:   pool,
+		Docker:     docker,
+	}, runtime)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return mgr, dumppkg.New(cfg, eng, es, docker), refresh.New(cfg, es, docker), nil
+}
+
+func buildAuthenticator(ctx context.Context, cfg *config.Config) (server.Authenticator, error) {
+	if cfg.Server.Auth.StaticToken != "" {
+		var sc secret.Cache
+		tok, err := sc.Resolve(ctx, cfg.Server.Auth.StaticToken, "")
+		if err != nil {
+			return nil, fmt.Errorf("host: resolve static token: %w", err)
+		}
+		slog.Warn("host: static token auth enabled — suitable for evaluation only; configure OIDC for production")
+		return oidc.NewStaticToken(tok), nil
+	}
+	return oidc.New(oidc.Config{
+		Issuer:     cfg.Server.Auth.Issuer,
+		Audience:   cfg.Server.Auth.Audience,
+		JWKSURL:    cfg.Server.Auth.JWKSURL,
+		AdminClaim: cfg.Server.Auth.AdminClaim,
+		AdminValue: cfg.Server.Auth.AdminValue,
+	}), nil
 }
 
 func makeStatusFn(cs *dittostore.CopyStore, cfg *config.Config) func() server.StatusResponse {
@@ -151,10 +170,7 @@ func makeStatusFn(cs *dittostore.CopyStore, cfg *config.Config) func() server.St
 		active, _ := cs.List(activeFilter())
 		warm, _ := cs.CountWarm()
 		total := cfg.PortPoolEnd - cfg.PortPoolStart + 1
-		free := total - len(active)
-		if free < 0 {
-			free = 0
-		}
+		free := max(0, total-len(active))
 		return server.StatusResponse{
 			Version:       version.Version,
 			ActiveCopies:  len(active),
