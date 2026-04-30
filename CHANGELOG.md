@@ -5,6 +5,31 @@ All notable changes to ditto are documented in this file.
 This changelog starts with the current unreleased product snapshot. Earlier history is available in
 `git log`.
 
+## 0.3.1 — 2026-04-30
+
+### Fixed
+
+- `dumpfetch`: reject local dump paths that escape the working directory (CWE-22 path traversal)
+- `dumpfetch`: validate that local path is non-empty before resolving
+- `server`: use `errors.Is(err, io.EOF)` instead of fragile string comparison when decoding JSON
+  request bodies
+- `refresh`: remove redundant `filepath.Clean` call already handled by `dumpfetch`
+- `refresh`: drop user-controlled path value from error log to prevent log injection (G706)
+- `server`: sanitize URL path value before logging to prevent log injection (G706)
+- CI: fix markdownlint MD013 line-length violations
+
+### Changed
+
+- Extract `engine.DefaultLocalBootstrap()` to eliminate three identical hardcoded `CopyBootstrap`
+  literals across copy and dump packages
+- Export `obfuscation.DriverName` and reuse it in the dump scheduler, removing a duplicated
+  engine-to-driver switch
+- Replace `new(n)` with `intPtr(n)` helper in `copy/manager` for stop-timeout clarity
+
+### Dependencies
+
+- Bump `github.com/jackc/pgx/v5` (Dependabot)
+
 ## 0.3.0 — 2026-04-30
 
 ### Added
