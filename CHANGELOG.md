@@ -5,6 +5,26 @@ All notable changes to ditto are documented in this file.
 This changelog starts with the current unreleased product snapshot. Earlier history is available in
 `git log`.
 
+## 0.3.0 — 2026-04-30
+
+### Added
+
+- `ditto target refresh <name>` — restore a configured dump into a named staging or QA database
+  (Postgres and MySQL); requires `allow_destructive_refresh: true` and `--confirm <name>`
+- `DITTO_SERVER` environment variable — shared-host clients no longer need to pass `--server` on
+  every command; an explicit flag still takes precedence
+- `ditto doctor --server <url>` — diagnose a remote shared host without local Docker or source config
+- `ditto erd` — auto-infer engine and database from a copy DSN when source config is absent
+- Server: admin-only `POST /v2/targets/{name}/refresh` API endpoint
+- Config: `targets` map with per-target engine, port, credential, and `allow_destructive_refresh`
+  validation
+
+### Fixed
+
+- Sanitize dump URI and local path in `dumpfetch` to prevent path traversal
+- Resolve CodeQL and Dependabot security alerts
+- GoReleaser deprecations and markdownlint failures in CI
+
 ## 0.2.0 — 2026-04-22
 
 ### Breaking Changes
