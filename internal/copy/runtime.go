@@ -38,12 +38,7 @@ type CopyRuntime struct {
 }
 
 func localRuntime(port int) CopyRuntime {
-	bootstrap := engine.CopyBootstrap{
-		Database:     "ditto",
-		User:         "ditto",
-		Password:     "ditto",
-		RootPassword: "ditto-root",
-	}
+	bootstrap := engine.DefaultLocalBootstrap()
 	conn := engine.ConnectionConfig{
 		Host:     "localhost",
 		Port:     port,

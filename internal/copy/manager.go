@@ -159,7 +159,7 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 	}
 	_ = m.events.Append("copy", id, "destroying", actor, nil)
 
-	stopErr := m.docker.ContainerStop(ctx, containerName(id), container.StopOptions{Timeout: new(10)})
+	stopErr := m.docker.ContainerStop(ctx, containerName(id), container.StopOptions{Timeout: intPtr(10)})
 	rmErr := m.docker.ContainerRemove(ctx, containerName(id), container.RemoveOptions{Force: true})
 
 	if stopErr != nil && !cerrdefs.IsNotFound(stopErr) {
@@ -206,7 +206,7 @@ func (m *Manager) RecoverOrphans(ctx context.Context) error {
 	for _, c := range stuck {
 		slog.Warn("copy: recovering stuck copy", "id", c.ID, "status", c.Status)
 		// Best-effort stop and remove.
-		_ = m.docker.ContainerStop(ctx, containerName(c.ID), container.StopOptions{Timeout: new(5)})
+		_ = m.docker.ContainerStop(ctx, containerName(c.ID), container.StopOptions{Timeout: intPtr(5)})
 		_ = m.docker.ContainerRemove(ctx, containerName(c.ID), container.RemoveOptions{Force: true})
 		m.ports.Release(c.Port)
 		_ = m.copies.UpdateStatus(c.ID, store.StatusFailed,
@@ -231,7 +231,7 @@ func (m *Manager) RecoverOrphans(ctx context.Context) error {
 		}
 		if _, err := m.copies.Get(copyID); err != nil {
 			slog.Warn("copy: removing orphan container", "container_id", ct.ID[:12], "copy_id", copyID)
-			_ = m.docker.ContainerStop(ctx, ct.ID, container.StopOptions{Timeout: new(5)})
+			_ = m.docker.ContainerStop(ctx, ct.ID, container.StopOptions{Timeout: intPtr(5)})
 			_ = m.docker.ContainerRemove(ctx, ct.ID, container.RemoveOptions{Force: true})
 		}
 	}
@@ -282,7 +282,7 @@ func (m *Manager) provision(ctx context.Context, opts CreateOptions, ttl int, wa
 	var containerStarted bool
 	cleanup := func(cause error) {
 		if containerStarted {
-			_ = m.docker.ContainerStop(context.Background(), containerName(id), container.StopOptions{Timeout: new(10)})
+			_ = m.docker.ContainerStop(context.Background(), containerName(id), container.StopOptions{Timeout: intPtr(10)})
 			_ = m.docker.ContainerRemove(context.Background(), containerName(id), container.RemoveOptions{Force: true})
 		}
 		m.ports.Release(port)
@@ -429,6 +429,8 @@ func (m *Manager) startContainer(ctx context.Context, id string, dumpPath string
 }
 
 func containerName(id string) string { return "ditto-" + id }
+
+func intPtr(n int) *int { return &n }
 
 func checkDump(path string, staleThreshold int) error {
 	info, err := os.Stat(path)

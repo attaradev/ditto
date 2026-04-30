@@ -99,6 +99,17 @@ type Engine interface {
 	Restore(ctx context.Context, docker *client.Client, dumpPath string, containerName string, copy CopyBootstrap) error
 }
 
+// DefaultLocalBootstrap returns the standard credentials used for ephemeral
+// copy and staging containers. All callers use these same fixed values.
+func DefaultLocalBootstrap() CopyBootstrap {
+	return CopyBootstrap{
+		Database:     "ditto",
+		User:         "ditto",
+		Password:     "ditto",
+		RootPassword: "ditto-root",
+	}
+}
+
 // ValidateSourceHost rejects loopback addresses that are unreachable from
 // dump helper containers. Both the postgres and mysql engines call this.
 func ValidateSourceHost(host string) error {

@@ -45,7 +45,7 @@ func (o *Obfuscator) Apply(ctx context.Context) error {
 		return nil
 	}
 
-	driver, err := driverName(o.engineName)
+	driver, err := DriverName(o.engineName)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,8 @@ func BuildSQL(engineName string, rule config.ObfuscationRule) (stmt string, args
 
 // --- internal helpers ---
 
-func driverName(engineName string) (string, error) {
+// DriverName maps an engine name to its registered database/sql driver name.
+func DriverName(engineName string) (string, error) {
 	switch engineName {
 	case "postgres":
 		return "pgx", nil

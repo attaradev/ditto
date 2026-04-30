@@ -33,8 +33,38 @@ func Fetch(ctx context.Context, uri string) (localPath string, cleanup func(), e
 	case strings.HasPrefix(uri, "http://"), strings.HasPrefix(uri, "https://"):
 		return fetchHTTP(ctx, uri)
 	default:
-		return filepath.Clean(uri), noop, nil
+		localPath, err := safeLocalPath(uri)
+		if err != nil {
+			return "", nil, err
+		}
+		return localPath, noop, nil
 	}
+}
+
+func safeLocalPath(uri string) (string, error) {
+	if strings.TrimSpace(uri) == "" {
+		return "", fmt.Errorf("dumpfetch: local dump path is empty")
+	}
+
+	candidate, err := filepath.Abs(uri)
+	if err != nil {
+		return "", fmt.Errorf("dumpfetch: resolve local dump path %q: %w", uri, err)
+	}
+
+	base, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("dumpfetch: determine working directory: %w", err)
+	}
+
+	rel, err := filepath.Rel(base, candidate)
+	if err != nil {
+		return "", fmt.Errorf("dumpfetch: resolve local dump path %q: %w", uri, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("dumpfetch: local dump path %q escapes working directory", uri)
+	}
+
+	return candidate, nil
 }
 
 func fetchS3(ctx context.Context, uri string) (string, func(), error) {

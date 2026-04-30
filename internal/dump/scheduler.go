@@ -205,12 +205,7 @@ func (s *Scheduler) bakeObfuscation(ctx context.Context, rawPath, outPath string
 	if err != nil {
 		return fmt.Errorf("allocate staging port: %w", err)
 	}
-	copyBootstrap := engine.CopyBootstrap{
-		Database:     "ditto",
-		User:         "ditto",
-		Password:     "ditto",
-		RootPassword: "ditto-root",
-	}
+	copyBootstrap := engine.DefaultLocalBootstrap()
 	conn := engine.ConnectionConfig{
 		Host:     "localhost",
 		Port:     port,
@@ -264,12 +259,7 @@ func (s *Scheduler) startStagingContainer(ctx context.Context, name string, port
 
 	portStr := fmt.Sprintf("%d", port)
 	exposedPort := nat.Port(fmt.Sprintf("%d/tcp", s.eng.ContainerPort()))
-	spec := s.eng.ContainerSpec(engine.CopyBootstrap{
-		Database:     "ditto",
-		User:         "ditto",
-		Password:     "ditto",
-		RootPassword: "ditto-root",
-	})
+	spec := s.eng.ContainerSpec(engine.DefaultLocalBootstrap())
 
 	resp, err := s.docker.ContainerCreate(ctx,
 		&container.Config{
@@ -316,20 +306,21 @@ func freePort() (int, error) {
 // table.column referenced in obfuscation rules exists in information_schema.
 // Returns a single error listing all missing columns.
 func (s *Scheduler) validateObfuscationRules(ctx context.Context) error {
-	var driverName, dsn string
+	driverName, err := obfuscation.DriverName(s.cfg.Source.Engine)
+	if err != nil {
+		return fmt.Errorf("dump: validateObfuscationRules: %w", err)
+	}
+
+	var dsn string
 	switch s.cfg.Source.Engine {
 	case "postgres":
-		driverName = "pgx"
 		dsn = fmt.Sprintf("postgres://%s:%s@%s:%d/%s?connect_timeout=5&sslmode=prefer",
 			s.cfg.Source.User, s.cfg.Source.Password,
 			s.cfg.Source.Host, s.cfg.Source.Port, s.cfg.Source.Database)
 	case "mysql":
-		driverName = "mysql"
 		dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?timeout=5s",
 			s.cfg.Source.User, s.cfg.Source.Password,
 			s.cfg.Source.Host, s.cfg.Source.Port, s.cfg.Source.Database)
-	default:
-		return fmt.Errorf("dump: validateObfuscationRules: unsupported engine %q", s.cfg.Source.Engine)
 	}
 
 	db, err := sql.Open(driverName, dsn)
