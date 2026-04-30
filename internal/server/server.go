@@ -264,21 +264,14 @@ func (s *Server) handleTargetRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetName := strings.Map(func(r rune) rune {
-		if r < 32 || r == 127 {
-			return -1
-		}
-		return r
-	}, r.PathValue("name"))
-
-	result, err := s.refresher.Refresh(r.Context(), targetName, refresh.Options{
+	result, err := s.refresher.Refresh(r.Context(), r.PathValue("name"), refresh.Options{
 		DumpURI:   req.DumpURI,
 		Confirm:   req.Confirm,
 		DryRun:    req.DryRun,
 		Obfuscate: req.Obfuscate,
 	})
 	if err != nil {
-		slog.Error("host api: target refresh failed", "target", targetName, "err", err)
+		slog.Error("host api: target refresh failed", "err", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
