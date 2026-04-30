@@ -61,7 +61,7 @@ See [Architecture](docs/explanation/architecture.md) for the full lifecycle and 
 | Mode | Use it when | Main commands |
 | --- | --- | --- |
 | Local host | The same machine can run Docker and owns the dump file | `reseed`, `copy create`, `copy run` |
-| Shared host | CI runners or developers should request copies from a central host | `host`, `copy create --server=...`, `copy run --server=...` |
+| Shared host | CI runners or developers should request copies from a central host without local Docker | `host`, `copy create --server=...`, `copy run --server=...` |
 
 ## Install
 
@@ -150,6 +150,15 @@ ditto erd --output schema.mmd
 ditto copy run -- go test ./...
 ```
 
+If your laptop or CI runner should not run Docker, point the CLI at a shared host instead:
+
+```bash
+export DITTO_SERVER='http://ditto.internal:8080'
+export DITTO_TOKEN="$DITTO_STATIC_TOKEN"    # or an OIDC bearer token
+ditto doctor --server "$DITTO_SERVER"
+ditto copy run -- go test ./...
+```
+
 See [Run Your First Copy](docs/tutorials/run-your-first-copy.md),
 [Demonstrate Obfuscation End to End](docs/tutorials/demonstrate-obfuscation-end-to-end.md), and
 [Configuration Reference](docs/reference/configuration.md) for the full setup.
@@ -166,6 +175,7 @@ See [Run Your First Copy](docs/tutorials/run-your-first-copy.md),
 | Generate an ERD from a copy | `ditto erd --output schema.mmd` |
 | Hold a copy across CI steps | `ditto copy create --format=json` and later `ditto copy delete <id>` |
 | Run a shared host for remote runners | `ditto host` |
+| Refresh a configured staging target | `ditto target refresh staging --confirm staging` |
 
 ## Documentation
 

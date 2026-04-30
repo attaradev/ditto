@@ -95,6 +95,21 @@ port_pool_end: 5600
 # 0 (default) disables the pool. A value of 2–3 covers most CI parallelism.
 # warm_pool_size: 3
 
+# Optional refresh targets for staging or QA databases.
+# Target refresh is destructive: ditto cleans user objects inside the configured
+# database and restores a dump into it. It does not create or modify RDS
+# instances, snapshots, roles, or instance settings.
+#
+# targets:
+#   staging:
+#     engine: postgres
+#     host: staging.example.com
+#     port: 5432
+#     database: myapp
+#     user: ditto_refresh
+#     password_secret: env:DITTO_TARGET_PASSWORD
+#     allow_destructive_refresh: true
+
 # PII obfuscation rules baked into the dump during `ditto reseed`.
 # That keeps later copies scrubbed by default. `copy create --dump ... --obfuscate`
 # and `copy run --dump ... --obfuscate` can also apply the same rules after restore.

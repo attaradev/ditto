@@ -15,6 +15,9 @@ Environment variables override file values. For example:
 DITTO_SOURCE_HOST=db.staging.example.com ditto copy create
 ```
 
+`DITTO_SERVER` is a special client-side default for shared-host mode. When set, `copy`, `env`,
+`erd`, and `target refresh` use that host unless `--server` is passed explicitly.
+
 ## Smallest environment-only setup
 
 If you do not want a config file yet, this is enough to get started locally:
@@ -30,6 +33,14 @@ export DITTO_DUMP_PATH="$PWD/.ditto/latest.gz"
 ```
 
 If you are not using `source.url`, you must provide the individual source fields instead.
+
+For clients that should not run Docker locally, the smallest setup is the shared-host URL plus a
+token:
+
+```bash
+export DITTO_SERVER='http://ditto.internal:8080'
+export DITTO_TOKEN="$(cat oidc.jwt)"
+```
 
 ## Minimal file-based config
 
@@ -162,6 +173,43 @@ The JSON payload posted to `webhook_url` includes `error`, `timestamp`, `last_du
 | `docker_host` | empty | Optional Docker daemon override |
 
 Warm pools are maintained by `ditto host`.
+
+## `targets`
+
+Targets are named databases that an operator can refresh from the current dump. This is destructive
+and intended for staging or QA databases, not production.
+
+```yaml
+targets:
+  staging:
+    engine: postgres
+    host: staging.example.com
+    port: 5432
+    database: app
+    user: ditto_refresh
+    password_secret: env:DITTO_TARGET_PASSWORD
+    allow_destructive_refresh: true
+```
+
+| Field | Meaning |
+| --- | --- |
+| `targets.<name>.engine` | `postgres` or `mysql` |
+| `targets.<name>.host` | Target database host reachable from the ditto runtime |
+| `targets.<name>.port` | Defaults to `5432` for Postgres and `3306` for MySQL |
+| `targets.<name>.database` | Database to clean and restore |
+| `targets.<name>.user` | Refresh user with permission to drop objects and restore the dump |
+| `targets.<name>.password` or `password_secret` | Plaintext for dev only; secret reference for real hosts |
+| `targets.<name>.allow_destructive_refresh` | Must be `true` before `ditto target refresh` will run |
+
+Run a refresh with an explicit confirmation:
+
+```bash
+ditto target refresh staging --confirm staging
+```
+
+The refresh deletes user objects inside the configured database, restores the dump, and optionally
+applies obfuscation with `--obfuscate`. It does not create RDS instances, restore snapshots, manage
+roles, or change database instance settings.
 
 ## `server`
 

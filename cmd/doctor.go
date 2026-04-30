@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/attaradev/ditto/internal/config"
@@ -15,7 +16,8 @@ import (
 )
 
 func newDoctorCmd() *cobra.Command {
-	return &cobra.Command{
+	var serverURL string
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnose configuration, Docker, and connectivity issues",
 		Long: `Check that ditto's prerequisites are satisfied before running other commands.
@@ -29,9 +31,11 @@ Verifies:
 
 Run this first when something isn't working.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(cmd)
+			return runDoctor(cmd, resolveServerURL(serverURL))
 		},
 	}
+	cmd.Flags().StringVar(&serverURL, "server", "", "Shared ditto host URL to diagnose instead of local Docker/config")
+	return cmd
 }
 
 type check struct {
@@ -40,7 +44,11 @@ type check struct {
 	msg  string
 }
 
-func runDoctor(cmd *cobra.Command) error {
+func runDoctor(cmd *cobra.Command, serverURL string) error {
+	if serverURL != "" {
+		return runRemoteDoctor(cmd, serverURL)
+	}
+
 	cfg := configFromContext(cmd)
 	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
 	defer cancel()
@@ -93,6 +101,57 @@ func runDoctor(cmd *cobra.Command) error {
 		return nil
 	}
 	return fmt.Errorf("one or more checks failed — fix the issues above and re-run ditto doctor")
+}
+
+func runRemoteDoctor(cmd *cobra.Command, serverURL string) error {
+	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+	defer cancel()
+
+	ok, msg := checkRemoteServer(ctx, serverURL, os.Getenv("DITTO_TOKEN"))
+	checks := []check{{name: "Shared ditto host", ok: ok, msg: msg}}
+
+	styleOK := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	styleFail := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	styleLabel := lipgloss.NewStyle().Width(26)
+
+	for _, c := range checks {
+		status := styleOK.Render("  OK")
+		if !c.ok {
+			status = styleFail.Render("FAIL")
+		}
+		fmt.Printf("%s  %s  %s\n", status, styleLabel.Render(c.name), c.msg)
+	}
+	fmt.Println()
+	if ok {
+		fmt.Println(styleOK.Render("All checks passed."))
+		return nil
+	}
+	return fmt.Errorf("one or more checks failed — fix the issues above and re-run ditto doctor --server")
+}
+
+func checkRemoteServer(ctx context.Context, serverURL, token string) (bool, string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(serverURL, "/")+"/v2/copies", nil)
+	if err != nil {
+		return false, fmt.Sprintf("invalid server URL: %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, fmt.Sprintf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, serverURL
+	case http.StatusUnauthorized:
+		return false, "authentication failed; set DITTO_TOKEN"
+	case http.StatusForbidden:
+		return false, "authenticated but not authorized"
+	default:
+		return false, fmt.Sprintf("server returned HTTP %d", resp.StatusCode)
+	}
 }
 
 func checkConfig(cfg *config.Config) (bool, string) {

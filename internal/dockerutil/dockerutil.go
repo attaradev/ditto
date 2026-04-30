@@ -124,6 +124,19 @@ func RunContainer(
 	return RunContainerOnNetwork(ctx, cli, cfg, hostCfg, nil, name)
 }
 
+// RunContainerWithInput is like RunContainer, but streams stdin into the helper
+// container. It is useful for clients such as mysql that can restore from stdin.
+func RunContainerWithInput(
+	ctx context.Context,
+	cli *client.Client,
+	cfg *container.Config,
+	hostCfg *container.HostConfig,
+	name string,
+	stdin io.Reader,
+) error {
+	return runContainer(ctx, cli, cfg, hostCfg, nil, name, stdin)
+}
+
 // RunContainerOnNetwork is like RunContainer but attaches the container to a
 // named Docker network via netCfg. Pass nil for netCfg to use the default
 // bridge network (equivalent to RunContainer).
@@ -134,6 +147,18 @@ func RunContainerOnNetwork(
 	hostCfg *container.HostConfig,
 	netCfg *network.NetworkingConfig,
 	name string,
+) error {
+	return runContainer(ctx, cli, cfg, hostCfg, netCfg, name, nil)
+}
+
+func runContainer(
+	ctx context.Context,
+	cli *client.Client,
+	cfg *container.Config,
+	hostCfg *container.HostConfig,
+	netCfg *network.NetworkingConfig,
+	name string,
+	stdin io.Reader,
 ) error {
 	if cfg == nil {
 		return fmt.Errorf("docker runtime: missing container config")
@@ -146,13 +171,40 @@ func RunContainerOnNetwork(
 		return err
 	}
 
-	resp, err := cli.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, name)
+	cfgCopy := *cfg
+	if stdin != nil {
+		cfgCopy.OpenStdin = true
+		cfgCopy.AttachStdin = true
+	}
+
+	resp, err := cli.ContainerCreate(ctx, &cfgCopy, hostCfg, netCfg, nil, name)
 	if err != nil {
 		return fmt.Errorf("docker runtime: create helper container: %w", err)
 	}
 	defer func() {
 		_ = cli.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{Force: true})
 	}()
+
+	var stdinErrCh chan error
+	if stdin != nil {
+		attach, err := cli.ContainerAttach(ctx, resp.ID, container.AttachOptions{
+			Stream: true,
+			Stdin:  true,
+		})
+		if err != nil {
+			return fmt.Errorf("docker runtime: attach helper container stdin: %w", err)
+		}
+		defer attach.Close()
+
+		stdinErrCh = make(chan error, 1)
+		go func() {
+			_, err := io.Copy(attach.Conn, stdin)
+			if err == nil {
+				err = attach.CloseWrite()
+			}
+			stdinErrCh <- err
+		}()
+	}
 
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		return fmt.Errorf("docker runtime: start helper container: %w", err)
@@ -178,6 +230,12 @@ func RunContainerOnNetwork(
 				return fmt.Errorf("docker runtime: helper container exited with status %d: %s", status.StatusCode, logs)
 			}
 			return fmt.Errorf("docker runtime: helper container exited with status %d", status.StatusCode)
+		}
+	}
+
+	if stdinErrCh != nil {
+		if err := <-stdinErrCh; err != nil {
+			return fmt.Errorf("docker runtime: stream stdin to helper container: %w", err)
 		}
 	}
 

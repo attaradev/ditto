@@ -63,6 +63,21 @@ implementation, shared-host mode also requires `server.db_tls.cert_file` and
 See
 [Configuration reference](../reference/configuration.md#secret-references).
 
+Optional target refreshes can be configured on the host. This lets an admin refresh a staging or QA
+database from the cached dump:
+
+```yaml
+targets:
+  staging:
+    engine: postgres
+    host: staging.example.com
+    port: 5432
+    database: myapp
+    user: ditto_refresh
+    password_secret: env:DITTO_TARGET_PASSWORD
+    allow_destructive_refresh: true
+```
+
 ## Run the controller
 
 Run `ditto host` under a service manager so one process owns dump refresh, warm-pool refill, TTL
@@ -102,7 +117,8 @@ Clients supply the token via `DITTO_TOKEN`:
 ```bash
 # Static token mode
 export DITTO_TOKEN="$DITTO_STATIC_TOKEN"
-ditto copy create --server=http://ditto.internal:8080
+export DITTO_SERVER=http://ditto.internal:8080
+ditto copy create
 
 # OIDC mode (production)
 export DITTO_TOKEN="$(cat oidc.jwt)"
@@ -112,8 +128,7 @@ ditto copy create --server=http://ditto.internal:8080
 Protect the service with network policy appropriate to the published DB ports. See
 [SECURITY.md](../../SECURITY.md).
 
-Non-admin callers can list and destroy only their own copies. The shared-host `/v2/status` endpoint
-requires an admin-capable token.
+Non-admin callers can list and destroy only their own copies. The shared-host `/v2/status` endpoint and target refresh endpoint require an admin-capable token.
 
 ## Runner setup
 
@@ -153,12 +168,16 @@ These commands cover most operator checks:
 
 ```bash
 ditto doctor          # full diagnostic: Docker, config, dump freshness, source DB, OIDC
+ditto doctor --server http://ditto.internal:8080
 ditto status          # quick capacity and dump age summary
 ditto copy list
 ditto copy logs <id>
+ditto target refresh staging --dry-run --confirm staging
 ```
 
 Use `ditto reseed` for an immediate refresh outside the normal schedule.
+Use `ditto target refresh staging --confirm staging` only when you intend to clean and restore that
+target database.
 
 ## Related reading
 

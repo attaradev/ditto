@@ -22,8 +22,9 @@ func defaultDumpFilePath() string {
 
 // Config is the top-level configuration structure, mirroring ditto.yaml.
 type Config struct {
-	Source Source `mapstructure:"source"`
-	Dump   Dump   `mapstructure:"dump"`
+	Source  Source            `mapstructure:"source"`
+	Dump    Dump              `mapstructure:"dump"`
+	Targets map[string]Target `mapstructure:"targets"`
 
 	CopyTTLSeconds int          `mapstructure:"copy_ttl_seconds"`
 	PortPoolStart  int          `mapstructure:"port_pool_start"`
@@ -74,6 +75,20 @@ type Source struct {
 	User           string `mapstructure:"user"`
 	Password       string `mapstructure:"password"`        // plain password (dev only)
 	PasswordSecret string `mapstructure:"password_secret"` // secret reference: env:VAR, file:/path, or arn:aws:...
+}
+
+// Target holds connection parameters for a database that ditto may refresh
+// from a configured dump. Target refresh is destructive and must be explicitly
+// enabled per target.
+type Target struct {
+	Engine                  string `mapstructure:"engine"`
+	Host                    string `mapstructure:"host"`
+	Port                    int    `mapstructure:"port"`
+	Database                string `mapstructure:"database"`
+	User                    string `mapstructure:"user"`
+	Password                string `mapstructure:"password"`        // plain password (dev only)
+	PasswordSecret          string `mapstructure:"password_secret"` // secret reference: env:VAR, file:/path, or arn:aws:...
+	AllowDestructiveRefresh bool   `mapstructure:"allow_destructive_refresh"`
 }
 
 // Obfuscation holds post-restore PII scrubbing rules applied to every copy.
@@ -166,6 +181,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	applyPortDefault(&cfg.Source)
+	applyTargetPortDefaults(cfg.Targets)
 
 	return &cfg, validate(&cfg)
 }
@@ -223,6 +239,26 @@ func applyPortDefault(src *Source) {
 		src.Port = 5432
 	case "mysql":
 		src.Port = 3306
+	}
+}
+
+func defaultPort(engine string) int {
+	switch engine {
+	case "postgres":
+		return 5432
+	case "mysql":
+		return 3306
+	default:
+		return 0
+	}
+}
+
+func applyTargetPortDefaults(targets map[string]Target) {
+	for name, target := range targets {
+		if target.Port == 0 {
+			target.Port = defaultPort(target.Engine)
+			targets[name] = target
+		}
 	}
 }
 
@@ -299,7 +335,43 @@ func validate(cfg *Config) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("config: missing required fields: %v", missing)
 	}
+	if err := validateTargets(cfg.Targets); err != nil {
+		return err
+	}
 	return validateObfuscation(cfg.Obfuscation.Rules)
+}
+
+func validateTargets(targets map[string]Target) error {
+	for name, target := range targets {
+		var missing []string
+		if target.Engine == "" {
+			missing = append(missing, "engine")
+		}
+		if target.Host == "" {
+			missing = append(missing, "host")
+		}
+		if target.Database == "" {
+			missing = append(missing, "database")
+		}
+		if target.User == "" {
+			missing = append(missing, "user")
+		}
+		if target.Password == "" && target.PasswordSecret == "" {
+			missing = append(missing, "password or password_secret")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("config: target %q missing required fields: %v", name, missing)
+		}
+		switch target.Engine {
+		case "postgres", "mysql":
+		default:
+			return fmt.Errorf("config: target %q has unsupported engine %q (supported: postgres, mysql)", name, target.Engine)
+		}
+		if target.Port <= 0 {
+			return fmt.Errorf("config: target %q has invalid port %d", name, target.Port)
+		}
+	}
+	return nil
 }
 
 var validStrategies = map[string]bool{

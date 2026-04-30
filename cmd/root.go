@@ -33,6 +33,8 @@ const (
 // NewRootCmd constructs the root cobra command. dbPath and cfgPath are
 // resolved from flags in main.go's PersistentPreRunE.
 func NewRootCmd() *cobra.Command {
+	cobra.EnableTraverseRunHooks = true
+
 	var (
 		dbPath  string
 		cfgPath string
@@ -115,6 +117,7 @@ Use it when shared staging databases make test runs flaky, schema fidelity matte
 		newHostCmd(),
 		newErdCmd(),
 		newEnvCmd(),
+		newTargetCmd(),
 		newDoctorCmd(),
 		newInitCmd(),
 	)

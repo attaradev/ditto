@@ -159,8 +159,10 @@ If you want developers to avoid local Docker entirely, run `ditto host` on a sha
 their commands at it:
 
 ```bash
+export DITTO_SERVER='http://ditto.internal:8080'
 export DITTO_TOKEN="$DITTO_STATIC_TOKEN"    # or: export DITTO_TOKEN="$(cat oidc.jwt)"
-ditto copy run --server=http://ditto.internal:8080 -- go test ./...
+ditto doctor --server "$DITTO_SERVER"
+ditto copy run -- go test ./...
 ```
 
 ## Troubleshooting

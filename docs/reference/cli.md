@@ -16,6 +16,9 @@ Global flags:
 | `--db <path>` | Path to the SQLite metadata database |
 | `--version` | Print version information |
 
+Shared-host clients may set `DITTO_SERVER` instead of passing `--server` on every supported command.
+An explicit `--server` flag takes precedence.
+
 ## `ditto copy`
 
 ### `ditto copy create`
@@ -107,6 +110,7 @@ Check that all prerequisites are satisfied before running other commands:
 
 ```bash
 ditto doctor
+ditto doctor --server http://ditto.internal:8080
 ```
 
 Verifies:
@@ -118,6 +122,9 @@ Verifies:
 - OIDC JWKS endpoint is reachable (when `server.auth` is configured)
 
 Prints a green/red checklist and exits non-zero if any check fails. Run this first when something is not working.
+
+With `--server` or `DITTO_SERVER`, `doctor` validates the shared host and bearer token without
+requiring local Docker, local source config, or a local dump file.
 
 ## `ditto init`
 
@@ -146,6 +153,29 @@ ditto status
 ```
 
 Use `ditto doctor` for a deeper diagnostic that includes source connectivity and OIDC checks.
+
+## `ditto target`
+
+Refresh a configured target database from the latest dump:
+
+```bash
+ditto target refresh staging --confirm staging
+ditto target refresh staging --dump s3://bucket/latest.gz --confirm staging
+ditto target refresh staging --dry-run --confirm staging
+```
+
+Flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--confirm <name>` | Required confirmation; must match the target name |
+| `--dump <uri>` | Restore from a local path, `s3://`, or `https://` source. In remote mode, local paths are rejected. |
+| `--dry-run` | Validate the request without cleaning or restoring |
+| `--obfuscate` | Apply configured obfuscation rules after restore |
+| `--server <url>` | Use a shared ditto host; bearer token comes from `DITTO_TOKEN` |
+
+Target refresh is destructive. The target must set `allow_destructive_refresh: true` in
+`ditto.yaml`.
 
 ## `ditto env`
 

@@ -59,6 +59,9 @@ The safest operating model is:
 
 That keeps raw production data out of developer shells, CI jobs, and restored copies.
 
+Configured target refreshes are destructive. Grant refresh credentials only to staging or QA
+databases, keep `allow_destructive_refresh` disabled for any target that should not be cleaned, and use admin-only shared-host tokens for `/v2/targets/{name}/refresh`.
+
 ### Host trust boundary
 
 Access to the Docker socket is effectively host-level privilege. Anyone who can control the runtime

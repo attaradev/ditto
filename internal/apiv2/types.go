@@ -52,3 +52,20 @@ type StatusResponse struct {
 	PortPoolFree  int    `json:"port_pool_free"`
 	AdvertiseHost string `json:"advertise_host,omitempty"`
 }
+
+type RefreshTargetRequest struct {
+	DumpURI   string `json:"dump_uri,omitempty"`
+	Confirm   string `json:"confirm,omitempty"`
+	DryRun    bool   `json:"dry_run,omitempty"`
+	Obfuscate bool   `json:"obfuscate,omitempty"`
+}
+
+type RefreshTargetResponse struct {
+	Target     string `json:"target"`
+	Engine     string `json:"engine"`
+	DumpPath   string `json:"dump_path,omitempty"`
+	DryRun     bool   `json:"dry_run"`
+	Cleaned    bool   `json:"cleaned"`
+	Restored   bool   `json:"restored"`
+	Obfuscated bool   `json:"obfuscated"`
+}

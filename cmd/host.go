@@ -13,6 +13,7 @@ import (
 	"github.com/attaradev/ditto/internal/dockerutil"
 	dumppkg "github.com/attaradev/ditto/internal/dump"
 	"github.com/attaradev/ditto/internal/oidc"
+	"github.com/attaradev/ditto/internal/refresh"
 	"github.com/attaradev/ditto/internal/secret"
 	"github.com/attaradev/ditto/internal/server"
 	dittostore "github.com/attaradev/ditto/internal/store"
@@ -111,7 +112,8 @@ func runHost(cmd *cobra.Command) error {
 	}
 	slog.Info("host: dump scheduler started")
 
-	srv := server.New(cfg.Server.Addr, mgr, cs, es, authn, makeStatusFn(cs, cfg))
+	refresher := refresh.New(cfg, es, docker)
+	srv := server.New(cfg.Server.Addr, mgr, refresher, cs, es, authn, makeStatusFn(cs, cfg))
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)

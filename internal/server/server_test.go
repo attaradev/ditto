@@ -14,6 +14,7 @@ import (
 	"github.com/attaradev/ditto/internal/apiv2"
 	copypkg "github.com/attaradev/ditto/internal/copy"
 	"github.com/attaradev/ditto/internal/oidc"
+	"github.com/attaradev/ditto/internal/refresh"
 	"github.com/attaradev/ditto/internal/server"
 	"github.com/attaradev/ditto/internal/store"
 )
@@ -45,6 +46,18 @@ func (c *controllerStub) Create(_ context.Context, opts copypkg.CreateOptions) (
 func (c *controllerStub) Destroy(_ context.Context, id string) error {
 	c.destroyed = append(c.destroyed, id)
 	return nil
+}
+
+type refresherStub struct {
+	target string
+	opts   refresh.Options
+	resp   *refresh.Result
+}
+
+func (r *refresherStub) Refresh(_ context.Context, targetName string, opts refresh.Options) (*refresh.Result, error) {
+	r.target = targetName
+	r.opts = opts
+	return r.resp, nil
 }
 
 func TestServerCreateSetsOwnerSubject(t *testing.T) {
@@ -221,8 +234,64 @@ func TestServerStatusRequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestServerTargetRefreshRequiresAdmin(t *testing.T) {
+	cs, es := newStores(t)
+	refresher := &refresherStub{resp: &refresh.Result{Target: "staging", Engine: "postgres", DryRun: true}}
+	api := newTestAPIWithRefresher(cs, es, &controllerStub{}, refresher)
+
+	body, err := json.Marshal(apiv2.RefreshTargetRequest{Confirm: "staging", DryRun: true})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	ownerReq := httptest.NewRequest(http.MethodPost, "/v2/targets/staging/refresh", bytes.NewReader(body))
+	ownerReq.Header.Set("Authorization", "Bearer owner-token")
+	ownerRec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(ownerRec, ownerReq)
+	if ownerRec.Code != http.StatusForbidden {
+		t.Fatalf("owner status code: got %d, want %d", ownerRec.Code, http.StatusForbidden)
+	}
+
+	adminReq := httptest.NewRequest(http.MethodPost, "/v2/targets/staging/refresh", bytes.NewReader(body))
+	adminReq.Header.Set("Authorization", "Bearer admin-token")
+	adminReq.Header.Set("Content-Type", "application/json")
+	adminRec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(adminRec, adminReq)
+	if adminRec.Code != http.StatusOK {
+		t.Fatalf("admin status code: got %d, want %d body=%s", adminRec.Code, http.StatusOK, adminRec.Body.String())
+	}
+	if refresher.target != "staging" {
+		t.Fatalf("target: got %q, want staging", refresher.target)
+	}
+	if !refresher.opts.DryRun || refresher.opts.Confirm != "staging" {
+		t.Fatalf("opts: got %+v", refresher.opts)
+	}
+}
+
+func TestServerTargetRefreshRejectsLocalDumpURI(t *testing.T) {
+	cs, es := newStores(t)
+	api := newTestAPIWithRefresher(cs, es, &controllerStub{}, &refresherStub{})
+
+	body, err := json.Marshal(apiv2.RefreshTargetRequest{DumpURI: "/tmp/dump.gz", Confirm: "staging"})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v2/targets/staging/refresh", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 func newTestAPI(cs *store.CopyStore, es *store.EventStore, controller *controllerStub) *server.Server {
-	return server.New(":0", controller, cs, es, &authStub{}, func() server.StatusResponse {
+	return newTestAPIWithRefresher(cs, es, controller, nil)
+}
+
+func newTestAPIWithRefresher(cs *store.CopyStore, es *store.EventStore, controller *controllerStub, refresher server.Refresher) *server.Server {
+	return server.New(":0", controller, refresher, cs, es, &authStub{}, func() server.StatusResponse {
 		return server.StatusResponse{
 			Version:       "test",
 			ActiveCopies:  1,

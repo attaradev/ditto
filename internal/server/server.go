@@ -15,12 +15,17 @@ import (
 	copypkg "github.com/attaradev/ditto/internal/copy"
 	"github.com/attaradev/ditto/internal/dumpfetch"
 	"github.com/attaradev/ditto/internal/oidc"
+	"github.com/attaradev/ditto/internal/refresh"
 	"github.com/attaradev/ditto/internal/store"
 )
 
 type Controller interface {
 	Create(ctx context.Context, opts copypkg.CreateOptions) (*store.Copy, error)
 	Destroy(ctx context.Context, id string) error
+}
+
+type Refresher interface {
+	Refresh(ctx context.Context, targetName string, opts refresh.Options) (*refresh.Result, error)
 }
 
 type Authenticator interface {
@@ -31,6 +36,7 @@ type StatusResponse = apiv2.StatusResponse
 
 type Server struct {
 	controller Controller
+	refresher  Refresher
 	copies     *store.CopyStore
 	events     *store.EventStore
 	auth       Authenticator
@@ -43,6 +49,7 @@ type principalKey struct{}
 func New(
 	addr string,
 	controller Controller,
+	refresher Refresher,
 	copies *store.CopyStore,
 	events *store.EventStore,
 	auth Authenticator,
@@ -50,6 +57,7 @@ func New(
 ) *Server {
 	s := &Server{
 		controller: controller,
+		refresher:  refresher,
 		copies:     copies,
 		events:     events,
 		auth:       auth,
@@ -62,6 +70,7 @@ func New(
 	mux.HandleFunc("DELETE /v2/copies/{id}", s.authenticated(s.handleDelete))
 	mux.HandleFunc("GET /v2/copies/{id}/events", s.authenticated(s.handleEvents))
 	mux.HandleFunc("GET /v2/status", s.authenticated(s.handleStatus))
+	mux.HandleFunc("POST /v2/targets/{name}/refresh", s.authenticated(s.handleTargetRefresh))
 
 	s.srv = &http.Server{
 		Addr:         addr,
@@ -228,6 +237,54 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.statusFn())
+}
+
+func (s *Server) handleTargetRefresh(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principalFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if !principal.IsAdmin {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if s.refresher == nil {
+		writeError(w, http.StatusNotImplemented, "target refresh is not configured")
+		return
+	}
+
+	var req apiv2.RefreshTargetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, context.Canceled) && err.Error() != "EOF" {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.DumpURI != "" && !strings.HasPrefix(req.DumpURI, "s3://") && !strings.HasPrefix(req.DumpURI, "https://") {
+		writeError(w, http.StatusBadRequest, "dump_uri must be an s3:// or https:// URI")
+		return
+	}
+
+	result, err := s.refresher.Refresh(r.Context(), r.PathValue("name"), refresh.Options{
+		DumpURI:   req.DumpURI,
+		Confirm:   req.Confirm,
+		DryRun:    req.DryRun,
+		Obfuscate: req.Obfuscate,
+	})
+	if err != nil {
+		slog.Error("host api: target refresh failed", "target", r.PathValue("name"), "err", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, apiv2.RefreshTargetResponse{
+		Target:     result.Target,
+		Engine:     result.Engine,
+		DumpPath:   result.DumpPath,
+		DryRun:     result.DryRun,
+		Cleaned:    result.Cleaned,
+		Restored:   result.Restored,
+		Obfuscated: result.Obfuscated,
+	})
 }
 
 func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {

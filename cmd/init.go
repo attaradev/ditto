@@ -67,6 +67,19 @@ copy_ttl_seconds: {{.TTL}}
 port_pool_start: {{.PortStart}}
 port_pool_end: {{.PortEnd}}
 
+# Optional refresh target. Target refresh is destructive and requires
+# allow_destructive_refresh plus --confirm <name>.
+#
+# targets:
+#   staging:
+#     engine: postgres
+#     host: staging.example.com
+#     port: 5432
+#     database: myapp
+#     user: ditto_refresh
+#     password_secret: "env:DITTO_TARGET_PASSWORD"
+#     allow_destructive_refresh: true
+
 # Uncomment and fill in obfuscation rules to scrub PII during ditto reseed.
 # Ditto validates referenced columns before the dump starts.
 # During obfuscation, it also hard-errors if a rule updates 0 rows.

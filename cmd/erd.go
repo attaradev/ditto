@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/attaradev/ditto/engine"
 	copypkg "github.com/attaradev/ditto/internal/copy"
 	"github.com/attaradev/ditto/internal/erd"
 	"github.com/attaradev/ditto/internal/secret"
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/spf13/cobra"
 )
 
@@ -95,19 +98,35 @@ func runERD(cmd *cobra.Command, format, output string, useSource bool) error {
 	}
 	defer cleanup()
 
-	driver := erdDriverName(cfg.Source.Engine)
+	engineName := cfg.Source.Engine
+	databaseName := cfg.Source.Database
+	if !useSource {
+		if inferredEngine, inferredDatabase, ok := inferERDTargetFromDSN(dsn); ok {
+			if engineName == "" {
+				engineName = inferredEngine
+			}
+			if databaseName == "" {
+				databaseName = inferredDatabase
+			}
+		}
+	}
+	if engineName == "" {
+		return fmt.Errorf("erd: database engine is unknown; configure source.engine or use a copy DSN with a recognizable format")
+	}
+
+	driver := erdDriverName(engineName)
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		return fmt.Errorf("erd: open db: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 
-	eng, err := engine.Get(cfg.Source.Engine)
+	eng, err := engine.Get(engineName)
 	if err != nil {
 		return fmt.Errorf("erd: %w", err)
 	}
 
-	schema, err := erd.Introspect(cmd.Context(), db, eng.Name(), cfg.Source.Database)
+	schema, err := erd.Introspect(cmd.Context(), db, eng.Name(), databaseName)
 	if err != nil {
 		return fmt.Errorf("erd: introspect: %w", err)
 	}
@@ -151,4 +170,19 @@ func erdDriverName(eng string) string {
 		return "mysql"
 	}
 	return "pgx"
+}
+
+func inferERDTargetFromDSN(dsn string) (engineName, database string, ok bool) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", "", false
+		}
+		return "postgres", strings.TrimPrefix(u.Path, "/"), true
+	}
+	cfg, err := mysqldriver.ParseDSN(dsn)
+	if err != nil || cfg.Net == "" {
+		return "", "", false
+	}
+	return "mysql", cfg.DBName, true
 }

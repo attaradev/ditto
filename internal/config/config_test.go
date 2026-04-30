@@ -279,6 +279,78 @@ server:
 	}
 }
 
+func TestConfigTargets(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ditto.yaml")
+	content := `
+source:
+  engine: postgres
+  host: source.example.com
+  database: app
+  user: ditto
+  password: secret
+
+targets:
+  staging:
+    engine: mysql
+    host: staging.example.com
+    database: app
+    user: ditto_refresh
+    password_secret: env:DITTO_TARGET_PASSWORD
+    allow_destructive_refresh: true
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	target := cfg.Targets["staging"]
+	if target.Engine != "mysql" {
+		t.Fatalf("Engine: got %q, want mysql", target.Engine)
+	}
+	if target.Port != 3306 {
+		t.Fatalf("Port: got %d, want 3306", target.Port)
+	}
+	if !target.AllowDestructiveRefresh {
+		t.Fatal("AllowDestructiveRefresh: got false, want true")
+	}
+}
+
+func TestConfigInvalidTarget(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ditto.yaml")
+	content := `
+source:
+  engine: postgres
+  host: source.example.com
+  database: app
+  user: ditto
+  password: secret
+
+targets:
+  staging:
+    engine: sqlite
+    host: staging.example.com
+    database: app
+    user: ditto_refresh
+    password: secret
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("Load: expected invalid target error, got nil")
+	}
+	if !strings.Contains(err.Error(), `target "staging" has unsupported engine`) {
+		t.Fatalf("Load error: %v", err)
+	}
+}
+
 func testSourceURL(scheme, user, password, host string, port int, database string) string {
 	u := &url.URL{
 		Scheme: scheme,

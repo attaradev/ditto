@@ -42,9 +42,9 @@ func copyClientFromContext(cmd *cobra.Command) copypkg.CopyClient {
 
 func serverURLFromContext(cmd *cobra.Command) string {
 	if url, ok := cmd.Context().Value(keyServerURL).(string); ok {
-		return url
+		return resolveServerURL(url)
 	}
-	return ""
+	return resolveServerURL("")
 }
 
 // detectRunID returns the first non-empty value from a standard set of
