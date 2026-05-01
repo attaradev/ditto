@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -74,46 +75,23 @@ func runERD(cmd *cobra.Command, format, output string, useSource bool) error {
 	}
 	defer cleanup()
 
-	engineName, databaseName, err := resolveERDTargetNames(cfg, useSource, dsn)
+	target, err := resolveERDTarget(cfg, useSource, dsn)
 	if err != nil {
 		return err
 	}
 
-	driver := erdDriverName(engineName)
-	db, err := sql.Open(driver, dsn)
+	schema, err := introspectERDSchema(cmd.Context(), target)
 	if err != nil {
-		return fmt.Errorf("erd: open db: %w", err)
+		return err
 	}
-	defer func() { _ = db.Close() }()
 
-	eng, err := engine.Get(engineName)
+	w, closeOutput, err := openERDOutput(output)
 	if err != nil {
-		return fmt.Errorf("erd: %w", err)
+		return err
 	}
+	defer closeOutput()
 
-	schema, err := erd.Introspect(cmd.Context(), db, eng.Name(), databaseName)
-	if err != nil {
-		return fmt.Errorf("erd: introspect: %w", err)
-	}
-
-	w := os.Stdout
-	if output != "" {
-		f, err := os.Create(output)
-		if err != nil {
-			return fmt.Errorf("erd: create output file: %w", err)
-		}
-		defer func() { _ = f.Close() }()
-		w = f
-	}
-
-	switch format {
-	case "mermaid":
-		return erd.RenderMermaid(schema, w)
-	case "dbml":
-		return erd.RenderDBML(schema, w)
-	default:
-		return fmt.Errorf("erd: unknown format %q — use mermaid or dbml", format)
-	}
+	return renderERD(format, schema, w)
 }
 
 // resolveERDDSN returns the DSN to introspect and a cleanup function that must
@@ -142,12 +120,18 @@ func resolveERDDSN(cmd *cobra.Command, cfg *config.Config, useSource bool) (dsn 
 	}, nil
 }
 
-// resolveERDTargetNames returns the engine and database names for ERD
-// introspection. When useSource is false, missing values are inferred from the
-// copy DSN; returns an error if the engine cannot be determined.
-func resolveERDTargetNames(cfg *config.Config, useSource bool, dsn string) (engineName, databaseName string, err error) {
-	engineName = cfg.Source.Engine
-	databaseName = cfg.Source.Database
+// erdTarget bundles the connection string and metadata needed for introspection.
+type erdTarget struct {
+	dsn          string
+	engineName   string
+	databaseName string
+}
+
+// resolveERDTarget resolves the engine and database names for introspection.
+// When useSource is false, missing values are inferred from the copy DSN.
+func resolveERDTarget(cfg *config.Config, useSource bool, dsn string) (erdTarget, error) {
+	engineName := cfg.Source.Engine
+	databaseName := cfg.Source.Database
 	if !useSource {
 		if inferredEngine, inferredDatabase, ok := inferERDTargetFromDSN(dsn); ok {
 			if engineName == "" {
@@ -159,9 +143,55 @@ func resolveERDTargetNames(cfg *config.Config, useSource bool, dsn string) (engi
 		}
 	}
 	if engineName == "" {
-		return "", "", fmt.Errorf("erd: database engine is unknown; configure source.engine or use a copy DSN with a recognizable format")
+		return erdTarget{}, fmt.Errorf("erd: database engine is unknown; configure source.engine or use a copy DSN with a recognizable format")
 	}
-	return engineName, databaseName, nil
+	return erdTarget{dsn: dsn, engineName: engineName, databaseName: databaseName}, nil
+}
+
+// introspectERDSchema opens a DB connection, fetches the engine, and returns
+// the introspected schema. The connection is closed before returning.
+func introspectERDSchema(ctx context.Context, t erdTarget) (*erd.Schema, error) {
+	db, err := sql.Open(erdDriverName(t.engineName), t.dsn)
+	if err != nil {
+		return nil, fmt.Errorf("erd: open db: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	eng, err := engine.Get(t.engineName)
+	if err != nil {
+		return nil, fmt.Errorf("erd: %w", err)
+	}
+
+	schema, err := erd.Introspect(ctx, db, eng.Name(), t.databaseName)
+	if err != nil {
+		return nil, fmt.Errorf("erd: introspect: %w", err)
+	}
+	return schema, nil
+}
+
+// openERDOutput returns the writer to render into and a close function to defer.
+// When path is empty it returns os.Stdout with a no-op closer.
+func openERDOutput(path string) (io.Writer, func(), error) {
+	if path == "" {
+		return os.Stdout, func() {}, nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("erd: create output file: %w", err)
+	}
+	return f, func() { _ = f.Close() }, nil
+}
+
+// renderERD writes the schema to w in the requested format.
+func renderERD(format string, schema *erd.Schema, w io.Writer) error {
+	switch format {
+	case "mermaid":
+		return erd.RenderMermaid(schema, w)
+	case "dbml":
+		return erd.RenderDBML(schema, w)
+	default:
+		return fmt.Errorf("erd: unknown format %q — use mermaid or dbml", format)
+	}
 }
 
 // buildERDSourceDSN builds a DSN for direct connection to the source database.
