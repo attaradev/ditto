@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/attaradev/ditto/engine"
-	copypkg "github.com/attaradev/ditto/internal/copy"
 	"github.com/attaradev/ditto/internal/config"
+	copypkg "github.com/attaradev/ditto/internal/copy"
 	"github.com/attaradev/ditto/internal/erd"
 	"github.com/attaradev/ditto/internal/secret"
 	mysqldriver "github.com/go-sql-driver/mysql"
