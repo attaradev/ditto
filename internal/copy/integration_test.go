@@ -19,7 +19,7 @@ func TestManagerCreateAppliesPostRestoreObfuscation(t *testing.T) {
 		t.Run(engineName, func(t *testing.T) {
 			suite := integrationdb.NewSuite(t, engineName)
 			sourceDB := suite.StartSource()
-			raw := integrationdb.SeedObfuscationDemo(t, engineName, sourceDB.LocalDSN())
+			raw := integrationdb.SeedObfuscationDemo(t, integrationdb.DBConn{EngineName: engineName, DSN: sourceDB.LocalDSN()})
 			integrationdb.AssertRawSnapshot(t, raw)
 
 			dumpDir := t.TempDir()
@@ -38,7 +38,7 @@ func TestManagerCreateAppliesPostRestoreObfuscation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Create raw copy: %v", err)
 			}
-			rawSnapshot := integrationdb.SnapshotObfuscationDemo(t, engineName, rawCopy.ConnectionString)
+			rawSnapshot := integrationdb.SnapshotObfuscationDemo(t, integrationdb.DBConn{EngineName: engineName, DSN: rawCopy.ConnectionString})
 			integrationdb.AssertRawSnapshot(t, rawSnapshot)
 			if err := manager.Destroy(t.Context(), rawCopy.ID); err != nil {
 				t.Fatalf("Destroy raw copy: %v", err)
@@ -52,7 +52,7 @@ func TestManagerCreateAppliesPostRestoreObfuscation(t *testing.T) {
 				_ = manager.Destroy(context.Background(), obfuscatedCopy.ID)
 			})
 
-			obfuscatedSnapshot := integrationdb.SnapshotObfuscationDemo(t, engineName, obfuscatedCopy.ConnectionString)
+			obfuscatedSnapshot := integrationdb.SnapshotObfuscationDemo(t, integrationdb.DBConn{EngineName: engineName, DSN: obfuscatedCopy.ConnectionString})
 			integrationdb.AssertObfuscatedSnapshot(t, rawSnapshot, obfuscatedSnapshot)
 		})
 	}

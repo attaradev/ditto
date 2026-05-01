@@ -20,12 +20,17 @@ func TestSchedulerRunOnceBakesObfuscation(t *testing.T) {
 		t.Run(engineName, func(t *testing.T) {
 			suite := integrationdb.NewSuite(t, engineName)
 			sourceDB := suite.StartSource()
-			raw := integrationdb.SeedObfuscationDemo(t, engineName, sourceDB.LocalDSN())
+			raw := integrationdb.SeedObfuscationDemo(t, integrationdb.DBConn{EngineName: engineName, DSN: sourceDB.LocalDSN()})
 			integrationdb.AssertRawSnapshot(t, raw)
 
 			dumpDir := t.TempDir()
 			dumpPath := filepath.Join(dumpDir, "latest.gz")
-			scheduler := newScheduler(t, suite, sourceDB, dumpPath, integrationdb.ObfuscationRules())
+			scheduler := newScheduler(t, schedulerFixture{
+				suite:    suite,
+				sourceDB: sourceDB,
+				dumpPath: dumpPath,
+				rules:    integrationdb.ObfuscationRules(),
+			})
 
 			if err := scheduler.RunOnce(t.Context()); err != nil {
 				t.Fatalf("RunOnce: %v", err)
@@ -41,7 +46,7 @@ func TestSchedulerRunOnceBakesObfuscation(t *testing.T) {
 				t.Fatalf("Restore obfuscated dump: %v", err)
 			}
 
-			got := integrationdb.SnapshotObfuscationDemo(t, engineName, copyDB.LocalDSN())
+			got := integrationdb.SnapshotObfuscationDemo(t, integrationdb.DBConn{EngineName: engineName, DSN: copyDB.LocalDSN()})
 			integrationdb.AssertObfuscatedSnapshot(t, raw, got)
 		})
 	}
@@ -52,10 +57,15 @@ func TestSchedulerRunOnceWarnOnly(t *testing.T) {
 		t.Run(engineName, func(t *testing.T) {
 			suite := integrationdb.NewSuite(t, engineName)
 			sourceDB := suite.StartSource()
-			raw := integrationdb.SeedObfuscationDemo(t, engineName, sourceDB.LocalDSN())
+			raw := integrationdb.SeedObfuscationDemo(t, integrationdb.DBConn{EngineName: engineName, DSN: sourceDB.LocalDSN()})
 
 			failingDumpPath := filepath.Join(t.TempDir(), "fail.gz")
-			failingScheduler := newScheduler(t, suite, sourceDB, failingDumpPath, integrationdb.ObfuscationRulesWithWarnOnlyProbe(false))
+			failingScheduler := newScheduler(t, schedulerFixture{
+				suite:    suite,
+				sourceDB: sourceDB,
+				dumpPath: failingDumpPath,
+				rules:    integrationdb.ObfuscationRulesWithWarnOnlyProbe(false),
+			})
 			err := failingScheduler.RunOnce(t.Context())
 			if err == nil {
 				t.Fatal("RunOnce without warn_only: got nil error, want failure")
@@ -69,7 +79,12 @@ func TestSchedulerRunOnceWarnOnly(t *testing.T) {
 
 			dumpDir := t.TempDir()
 			passingDumpPath := filepath.Join(dumpDir, "warn-only.gz")
-			passingScheduler := newScheduler(t, suite, sourceDB, passingDumpPath, integrationdb.ObfuscationRulesWithWarnOnlyProbe(true))
+			passingScheduler := newScheduler(t, schedulerFixture{
+				suite:    suite,
+				sourceDB: sourceDB,
+				dumpPath: passingDumpPath,
+				rules:    integrationdb.ObfuscationRulesWithWarnOnlyProbe(true),
+			})
 			if err := passingScheduler.RunOnce(t.Context()); err != nil {
 				t.Fatalf("RunOnce with warn_only: %v", err)
 			}
@@ -84,19 +99,20 @@ func TestSchedulerRunOnceWarnOnly(t *testing.T) {
 				t.Fatalf("Restore warn_only dump: %v", err)
 			}
 
-			got := integrationdb.SnapshotObfuscationDemo(t, engineName, copyDB.LocalDSN())
+			got := integrationdb.SnapshotObfuscationDemo(t, integrationdb.DBConn{EngineName: engineName, DSN: copyDB.LocalDSN()})
 			integrationdb.AssertObfuscatedSnapshot(t, raw, got)
 		})
 	}
 }
 
-func newScheduler(
-	t *testing.T,
-	suite *integrationdb.Suite,
-	sourceDB *integrationdb.Database,
-	dumpPath string,
-	rules []config.ObfuscationRule,
-) *dump.Scheduler {
+type schedulerFixture struct {
+	suite    *integrationdb.Suite
+	sourceDB *integrationdb.Database
+	dumpPath string
+	rules    []config.ObfuscationRule
+}
+
+func newScheduler(t *testing.T, fixture schedulerFixture) *dump.Scheduler {
 	t.Helper()
 
 	db, err := store.Open(":memory:")
@@ -108,20 +124,20 @@ func newScheduler(
 	return dump.New(
 		&config.Config{
 			Source: config.Source{
-				Engine:   suite.EngineName,
-				Host:     suite.HostAccessAddress(),
-				Port:     sourceDB.Port,
-				Database: sourceDB.Bootstrap.Database,
-				User:     sourceDB.Bootstrap.User,
-				Password: sourceDB.Bootstrap.Password,
+				Engine:   fixture.suite.EngineName,
+				Host:     fixture.suite.HostAccessAddress(),
+				Port:     fixture.sourceDB.Port,
+				Database: fixture.sourceDB.Bootstrap.Database,
+				User:     fixture.sourceDB.Bootstrap.User,
+				Password: fixture.sourceDB.Bootstrap.Password,
 			},
 			Dump: config.Dump{
-				Path: dumpPath,
+				Path: fixture.dumpPath,
 			},
-			Obfuscation: config.Obfuscation{Rules: rules},
+			Obfuscation: config.Obfuscation{Rules: fixture.rules},
 		},
-		suite.Engine,
+		fixture.suite.Engine,
 		store.NewEventStore(db),
-		suite.Docker,
+		fixture.suite.Docker,
 	)
 }

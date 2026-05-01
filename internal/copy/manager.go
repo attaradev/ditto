@@ -173,19 +173,21 @@ func (m *Manager) markDestroying(id string) error {
 }
 
 func (m *Manager) stopAndRemoveContainer(ctx context.Context, id string) error {
-	stopErr := m.docker.ContainerStop(ctx, containerName(id), container.StopOptions{Timeout: intPtr(10)})
-	rmErr := m.docker.ContainerRemove(ctx, containerName(id), container.RemoveOptions{Force: true})
+	name := containerName(id)
 
-	if stopErr != nil && !cerrdefs.IsNotFound(stopErr) {
-		slog.Warn("copy: container stop failed", "id", id, "err", stopErr)
-	}
-	if rmErr == nil || cerrdefs.IsNotFound(rmErr) {
-		return nil
+	// Best-effort stop; log but do not fail on stop errors.
+	if err := m.docker.ContainerStop(ctx, name, container.StopOptions{Timeout: intPtr(10)}); err != nil && !cerrdefs.IsNotFound(err) {
+		slog.Warn("copy: container stop failed", "id", id, "err", err)
 	}
 
-	slog.Warn("copy: container remove failed", "id", id, "err", rmErr)
-	_ = m.copies.UpdateStatus(id, store.StatusFailed, store.WithErrorMessage(rmErr.Error()))
-	return fmt.Errorf("copy.Destroy remove %s: %w", id, rmErr)
+	// Remove the container; NotFound is acceptable.
+	if err := m.docker.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
+		slog.Warn("copy: container remove failed", "id", id, "err", err)
+		_ = m.copies.UpdateStatus(id, store.StatusFailed, store.WithErrorMessage(err.Error()))
+		return fmt.Errorf("copy.Destroy remove %s: %w", id, err)
+	}
+
+	return nil
 }
 
 func (m *Manager) markDestroyed(id string) error {
@@ -215,6 +217,15 @@ func (m *Manager) ExpireOldCopies(ctx context.Context) error {
 // RecoverOrphans is called at daemon startup. It heals mid-transition records
 // left by a crashed process and removes Docker containers not tracked in SQLite.
 func (m *Manager) RecoverOrphans(ctx context.Context) error {
+	if err := m.recoverStuckCopies(ctx); err != nil {
+		return err
+	}
+	return m.removeOrphanContainers(ctx)
+}
+
+// recoverStuckCopies marks any copies stuck in an intermediate state as failed
+// and cleans up their associated containers.
+func (m *Manager) recoverStuckCopies(ctx context.Context) error {
 	stuck, err := m.copies.ListStuck()
 	if err != nil {
 		return err
@@ -230,8 +241,12 @@ func (m *Manager) RecoverOrphans(ctx context.Context) error {
 		_ = m.events.Append("copy", c.ID, "failed", "system",
 			map[string]any{"reason": "crash recovery", "previous_status": c.Status})
 	}
+	return nil
+}
 
-	// Find Docker containers with our labels that are not in SQLite.
+// removeOrphanContainers finds Docker containers with our labels that are not
+// tracked in SQLite and removes them.
+func (m *Manager) removeOrphanContainers(ctx context.Context) error {
 	containerList, err := m.docker.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: filters.NewArgs(filters.Arg("label", labelManaged+"=true")),

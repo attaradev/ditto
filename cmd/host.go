@@ -165,11 +165,10 @@ func buildAuthenticator(ctx context.Context, cfg *config.Config) (server.Authent
 		return oidc.NewStaticToken(tok), nil
 	}
 	return oidc.New(oidc.Config{
-		Issuer:     cfg.Server.Auth.Issuer,
-		Audience:   cfg.Server.Auth.Audience,
-		JWKSURL:    cfg.Server.Auth.JWKSURL,
-		AdminClaim: cfg.Server.Auth.AdminClaim,
-		AdminValue: cfg.Server.Auth.AdminValue,
+		Issuer:    cfg.Server.Auth.Issuer,
+		Audience:  cfg.Server.Auth.Audience,
+		JWKSURL:   cfg.Server.Auth.JWKSURL,
+		AdminRule: oidc.AdminRule{Key: cfg.Server.Auth.AdminClaim, Value: cfg.Server.Auth.AdminValue},
 	}), nil
 }
 

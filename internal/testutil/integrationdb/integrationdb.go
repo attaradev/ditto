@@ -29,6 +29,13 @@ const (
 	EngineMySQL    = "mysql"
 )
 
+// DBConn bundles an engine name with a DSN, eliminating loose primitive pairs
+// that appear throughout the integration helpers.
+type DBConn struct {
+	EngineName string
+	DSN        string
+}
+
 // Suite owns one Docker client and one isolated network for a single
 // integration test case.
 type Suite struct {
@@ -48,6 +55,14 @@ type Database struct {
 	ContainerID string
 	Port        int
 	Bootstrap   engine.CopyBootstrap
+}
+
+// databaseConfig bundles the parameters that customize how a database container
+// is started: a naming prefix, the bind host IP, and an optional dump directory.
+type databaseConfig struct {
+	prefix   string
+	bindHost string
+	dumpDir  string
 }
 
 // NewSuite creates an isolated Docker network for one engine-specific test.
@@ -89,13 +104,21 @@ func NewSuite(t *testing.T, engineName string) *Suite {
 // network alias so tests can use either path.
 func (s *Suite) StartSource() *Database {
 	s.t.Helper()
-	return s.startDatabase("src", "0.0.0.0", "", sourceBootstrap())
+	return s.startDatabase(databaseConfig{
+		prefix:   "src",
+		bindHost: "0.0.0.0",
+		dumpDir:  "",
+	}, sourceBootstrap())
 }
 
 // StartCopy starts a copy or staging container with /dump mounted from dumpDir.
 func (s *Suite) StartCopy(dumpDir string) *Database {
 	s.t.Helper()
-	return s.startDatabase("copy", "127.0.0.1", dumpDir, copyBootstrap())
+	return s.startDatabase(databaseConfig{
+		prefix:   "copy",
+		bindHost: "127.0.0.1",
+		dumpDir:  dumpDir,
+	}, copyBootstrap())
 }
 
 // HostAccessAddress returns a non-loopback IP address that helper containers
@@ -120,23 +143,23 @@ func (s *Suite) HostAccessAddress() string {
 	return ip
 }
 
-func (s *Suite) startDatabase(prefix, bindHost, dumpDir string, bootstrap engine.CopyBootstrap) *Database {
+func (s *Suite) startDatabase(cfg databaseConfig, bootstrap engine.CopyBootstrap) *Database {
 	s.t.Helper()
 
 	if err := dockerutil.EnsureImage(s.ctx, s.Docker, s.Engine.ContainerImage()); err != nil {
 		s.t.Fatalf("pull image %s: %v", s.Engine.ContainerImage(), err)
 	}
 
-	name := fmt.Sprintf("ditto-it-%s-%s-%s", s.EngineName, prefix, strings.ToLower(ulid.Make().String()))
+	name := fmt.Sprintf("ditto-it-%s-%s-%s", s.EngineName, cfg.prefix, strings.ToLower(ulid.Make().String()))
 	hostPort := MustFreePort(s.t)
 	exposedPort := nat.Port(fmt.Sprintf("%d/tcp", s.Engine.ContainerPort()))
 	spec := s.Engine.ContainerSpec(bootstrap)
 
 	var mounts []mount.Mount
-	if dumpDir != "" {
+	if cfg.dumpDir != "" {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
-			Source: dumpDir,
+			Source: cfg.dumpDir,
 			Target: "/dump",
 		})
 	}
@@ -152,7 +175,7 @@ func (s *Suite) startDatabase(prefix, bindHost, dumpDir string, bootstrap engine
 		&container.HostConfig{
 			PortBindings: nat.PortMap{
 				exposedPort: []nat.PortBinding{{
-					HostIP:   bindHost,
+					HostIP:   cfg.bindHost,
 					HostPort: fmt.Sprintf("%d", hostPort),
 				}},
 			},
@@ -248,14 +271,14 @@ func (db *Database) HostSourceConfig(host string) engine.SourceConfig {
 	}
 }
 
-// OpenDB opens a database/sql handle for dsn using the correct driver for
-// engineName.
-func OpenDB(t *testing.T, engineName, dsn string) *sql.DB {
+// OpenDB opens a database/sql handle for the given connection using the
+// correct driver for its engine.
+func OpenDB(t *testing.T, conn DBConn) *sql.DB {
 	t.Helper()
 
-	db, err := sql.Open(driverNameFor(engineName), dsn)
+	db, err := sql.Open(driverNameFor(conn.EngineName), conn.DSN)
 	if err != nil {
-		t.Fatalf("sql.Open(%s): %v", engineName, err)
+		t.Fatalf("sql.Open(%s): %v", conn.EngineName, err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
@@ -300,46 +323,91 @@ func driverNameFor(engineName string) string {
 	}
 }
 
-func localIPv4() (string, error) {
+// isNonLoopbackIPv4 checks whether an IP is a valid non-loopback IPv4 address.
+func isNonLoopbackIPv4(ip net.IP) bool {
+	if ip == nil || ip.IsLoopback() {
+		return false
+	}
+	return ip.To4() != nil
+}
+
+// localIPv4ViaDial attempts to find the local IPv4 address by establishing
+// a UDP connection to a remote address (no actual data is sent).
+func localIPv4ViaDial() (string, error) {
 	conn, err := net.Dial("udp", "198.51.100.1:80")
-	if err == nil {
-		defer func() { _ = conn.Close() }()
-		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok && addr.IP != nil && !addr.IP.IsLoopback() {
-			if ip := addr.IP.To4(); ip != nil {
-				return ip.String(), nil
-			}
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || !isNonLoopbackIPv4(addr.IP) {
+		return "", fmt.Errorf("no IPv4 address from dial")
+	}
+
+	return addr.IP.To4().String(), nil
+}
+
+// localIPv4ViaInterfaces enumerates all network interfaces and returns
+// the first non-loopback IPv4 address found.
+func localIPv4ViaInterfaces() (string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("inspect interfaces: %w", err)
+	}
+
+	for _, iface := range ifaces {
+		if !isInterfaceActive(iface) {
+			continue
+		}
+		ip, ok := findFirstIPv4(iface)
+		if ok {
+			return ip, nil
 		}
 	}
 
-	ifaces, ifaceErr := net.Interfaces()
-	if ifaceErr != nil {
-		return "", fmt.Errorf("inspect interfaces: %w", ifaceErr)
-	}
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch value := addr.(type) {
-			case *net.IPNet:
-				ip = value.IP
-			case *net.IPAddr:
-				ip = value.IP
-			}
-			if ip == nil || ip.IsLoopback() {
-				continue
-			}
-			if v4 := ip.To4(); v4 != nil {
-				return v4.String(), nil
-			}
-		}
-	}
 	return "", fmt.Errorf("no non-loopback IPv4 address found")
 }
 
+// isInterfaceActive checks whether an interface is up and not a loopback.
+func isInterfaceActive(iface net.Interface) bool {
+	return iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagLoopback == 0
+}
+
+// findFirstIPv4 returns the first non-loopback IPv4 address from an interface.
+func findFirstIPv4(iface net.Interface) (string, bool) {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return "", false
+	}
+
+	for _, addr := range addrs {
+		ip := extractIP(addr)
+		if isNonLoopbackIPv4(ip) {
+			return ip.To4().String(), true
+		}
+	}
+
+	return "", false
+}
+
+// extractIP extracts the IP from a net.Addr (either IPNet or IPAddr).
+func extractIP(addr net.Addr) net.IP {
+	switch value := addr.(type) {
+	case *net.IPNet:
+		return value.IP
+	case *net.IPAddr:
+		return value.IP
+	}
+	return nil
+}
+
+// localIPv4 attempts to find a non-loopback IPv4 address, first via a dial
+// attempt (which may use routing hints) and then by enumerating interfaces.
+func localIPv4() (string, error) {
+	if ip, err := localIPv4ViaDial(); err == nil {
+		return ip, nil
+	}
+	return localIPv4ViaInterfaces()
+}
 func intPtr(v int) *int { return &v }

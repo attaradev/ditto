@@ -23,8 +23,8 @@ func NewStaticToken(token string) *StaticTokenValidator {
 // Authenticate accepts "Bearer <token>" where token matches the configured
 // static secret. Emits a startup-style warning on every successful auth to
 // remind operators to migrate to OIDC.
-func (v *StaticTokenValidator) Authenticate(_ context.Context, authHeader string) (*Principal, error) {
-	raw := strings.TrimSpace(authHeader)
+func (v *StaticTokenValidator) Authenticate(_ context.Context, h AuthHeader) (*Principal, error) {
+	raw := strings.TrimSpace(string(h))
 	if !strings.HasPrefix(raw, "Bearer ") {
 		return nil, ErrUnauthorized
 	}

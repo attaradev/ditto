@@ -28,6 +28,48 @@ type Obfuscator struct {
 	rules      []config.ObfuscationRule
 }
 
+// sqlTarget bundles the engine and quoted table/column identifiers used by
+// SQL-builder helpers.
+type sqlTarget struct {
+	engine string
+	table  string
+	column string
+}
+
+func newSQLTarget(engine string, rule config.ObfuscationRule) sqlTarget {
+	return sqlTarget{
+		engine: engine,
+		table:  quoteIdent(engine, rule.Table),
+		column: quoteIdent(engine, rule.Column),
+	}
+}
+
+// replaceContext carries all values needed to build deterministic replace SQL
+// expressions for a single target column.
+type replaceContext struct {
+	column   string
+	dataType string
+	h32      string
+	h64      string
+}
+
+func newReplaceContext(target sqlTarget, dataType string) replaceContext {
+	return replaceContext{
+		column:   target.column,
+		dataType: dataType,
+		h32:      fmt.Sprintf("abs(hashtext(%s::text))", target.column),
+		h64:      fmt.Sprintf("encode(sha256(%s::bytea),'hex')", target.column),
+	}
+}
+
+func newMySQLReplaceContext(target sqlTarget, dataType string) replaceContext {
+	return replaceContext{
+		column:   target.column,
+		dataType: dataType,
+		h32:      fmt.Sprintf("ABS(CRC32(%s))", target.column),
+	}
+}
+
 // New creates an Obfuscator. engineName must be "postgres" or "mysql".
 // dsn is the connection string returned by engine.ConnectionString("localhost", port).
 func New(engineName, dsn string, rules []config.ObfuscationRule) *Obfuscator {
@@ -45,34 +87,60 @@ func (o *Obfuscator) Apply(ctx context.Context) error {
 		return nil
 	}
 
-	driver, err := DriverName(o.engineName)
+	db, err := o.openDB()
 	if err != nil {
 		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	return o.applyRules(ctx, db)
+}
+
+// openDB opens a database connection using the correct driver for this obfuscator's engine.
+func (o *Obfuscator) openDB() (*sql.DB, error) {
+	driver, err := DriverName(o.engineName)
+	if err != nil {
+		return nil, err
 	}
 
 	db, err := sql.Open(driver, o.dsn)
 	if err != nil {
-		return fmt.Errorf("obfuscation: open db: %w", err)
+		return nil, fmt.Errorf("obfuscation: open db: %w", err)
 	}
-	defer func() { _ = db.Close() }()
+	return db, nil
+}
 
+// applyRules executes all rules in sequence, returning the first error encountered
+// or a warn-only message if a rule matches zero rows.
+func (o *Obfuscator) applyRules(ctx context.Context, db *sql.DB) error {
 	for _, rule := range o.rules {
-		stmt, args, err := buildSQL(o.engineName, rule)
-		if err != nil {
-			return fmt.Errorf("obfuscation: build SQL for %s.%s: %w", rule.Table, rule.Column, err)
+		if err := o.applyRule(ctx, db, rule); err != nil {
+			return err
 		}
-		result, err := db.ExecContext(ctx, stmt, args...)
-		if err != nil {
-			return fmt.Errorf("obfuscation: apply %s on %s.%s: %w",
-				rule.Strategy, rule.Table, rule.Column, err)
-		}
-		if n, _ := result.RowsAffected(); n == 0 {
-			msg := fmt.Sprintf("obfuscation: rule %s.%s matched 0 rows — verify table and column names exist in source schema", rule.Table, rule.Column)
-			if rule.WarnOnly {
-				slog.Warn(msg)
-			} else {
-				return fmt.Errorf("%s", msg)
-			}
+	}
+	return nil
+}
+
+// applyRule executes a single obfuscation rule and validates that it matched at least one row.
+func (o *Obfuscator) applyRule(ctx context.Context, db *sql.DB, rule config.ObfuscationRule) error {
+	stmt, args, err := buildSQL(o.engineName, rule)
+	if err != nil {
+		return fmt.Errorf("obfuscation: build SQL for %s.%s: %w", rule.Table, rule.Column, err)
+	}
+
+	result, err := db.ExecContext(ctx, stmt, args...)
+	if err != nil {
+		return fmt.Errorf("obfuscation: apply %s on %s.%s: %w",
+			rule.Strategy, rule.Table, rule.Column, err)
+	}
+
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		msg := fmt.Sprintf("obfuscation: rule %s.%s matched 0 rows — verify table and column names exist in source schema", rule.Table, rule.Column)
+		if rule.WarnOnly {
+			slog.Warn(msg)
+		} else {
+			return fmt.Errorf("%s", msg)
 		}
 	}
 	return nil
@@ -100,29 +168,28 @@ func DriverName(engineName string) (string, error) {
 
 // buildSQL generates an engine-specific UPDATE statement for a single rule.
 func buildSQL(eng string, r config.ObfuscationRule) (string, []any, error) {
-	t := quoteIdent(eng, r.Table)
-	c := quoteIdent(eng, r.Column)
+	target := newSQLTarget(eng, r)
 
 	switch r.Strategy {
 	case "nullify":
-		return fmt.Sprintf("UPDATE %s SET %s = NULL", t, c), nil, nil
+		return fmt.Sprintf("UPDATE %s SET %s = NULL", target.table, target.column), nil, nil
 
 	case "redact":
 		replacement := r.With
 		if replacement == "" {
 			replacement = "[redacted]"
 		}
-		return fmt.Sprintf("UPDATE %s SET %s = %s", t, c, ph(eng, 1)),
+		return fmt.Sprintf("UPDATE %s SET %s = %s", target.table, target.column, ph(target.engine, 1)),
 			[]any{replacement}, nil
 
 	case "mask":
-		return maskSQL(eng, t, c, r), nil, nil
+		return maskSQL(target, r), nil, nil
 
 	case "hash":
-		return hashSQL(eng, t, c), nil, nil
+		return hashSQL(target), nil, nil
 
 	case "replace":
-		stmt, err := replaceSQL(eng, t, c, r.Type)
+		stmt, err := replaceSQL(target, r.Type)
 		return stmt, nil, err
 
 	default:
@@ -132,31 +199,31 @@ func buildSQL(eng string, r config.ObfuscationRule) (string, []any, error) {
 
 // maskSQL generates a REPEAT-based mask expression. Uses GREATEST to guard
 // against negative lengths when KeepLast exceeds the actual string length.
-func maskSQL(eng, t, c string, r config.ObfuscationRule) string {
+func maskSQL(target sqlTarget, r config.ObfuscationRule) string {
 	maskChar := r.MaskChar
 	if maskChar == "" {
 		maskChar = "*"
 	}
 	lit := sqlStringLiteral(maskChar)
 
-	switch eng {
+	switch target.engine {
 	case "mysql":
 		if r.KeepLast > 0 {
 			return fmt.Sprintf(
 				"UPDATE %s SET %s = CONCAT(REPEAT(%s, GREATEST(0, CHAR_LENGTH(%s) - %d)), RIGHT(%s, %d))",
-				t, c, lit, c, r.KeepLast, c, r.KeepLast,
+				target.table, target.column, lit, target.column, r.KeepLast, target.column, r.KeepLast,
 			)
 		}
-		return fmt.Sprintf("UPDATE %s SET %s = REPEAT(%s, CHAR_LENGTH(%s))", t, c, lit, c)
+		return fmt.Sprintf("UPDATE %s SET %s = REPEAT(%s, CHAR_LENGTH(%s))", target.table, target.column, lit, target.column)
 
 	default: // postgres
 		if r.KeepLast > 0 {
 			return fmt.Sprintf(
 				"UPDATE %s SET %s = REPEAT(%s, GREATEST(0, length(%s::text) - %d)) || right(%s::text, %d)",
-				t, c, lit, c, r.KeepLast, c, r.KeepLast,
+				target.table, target.column, lit, target.column, r.KeepLast, target.column, r.KeepLast,
 			)
 		}
-		return fmt.Sprintf("UPDATE %s SET %s = REPEAT(%s, length(%s::text))", t, c, lit, c)
+		return fmt.Sprintf("UPDATE %s SET %s = REPEAT(%s, length(%s::text))", target.table, target.column, lit, target.column)
 	}
 }
 
@@ -167,95 +234,95 @@ func maskSQL(eng, t, c string, r config.ObfuscationRule) string {
 //
 // All generated values use clearly fictional domains/ranges (example.com,
 // +1-555-01xx, 10.x.x.x) so they cannot be mistaken for real PII.
-func replaceSQL(eng, t, c, dataType string) (string, error) {
-	switch eng {
+func replaceSQL(target sqlTarget, dataType string) (string, error) {
+	switch target.engine {
 	case "mysql":
-		return replaceSQLMySQL(t, c, dataType)
+		return replaceSQLMySQL(target, dataType)
 	default:
-		return replaceSQLPostgres(t, c, dataType)
+		return replaceSQLPostgres(target, dataType)
 	}
 }
 
-func replaceSQLPostgres(t, c, dataType string) (string, error) {
-	// h32: abs(hashtext(col::text)) — cheap 32-bit hash, good for short values
-	h := fmt.Sprintf("abs(hashtext(%s::text))", c)
-	// h64: 64-bit hex from sha256 — used for uuid / url where more bits matter
-	h64 := fmt.Sprintf("encode(sha256(%s::bytea),'hex')", c)
+func replaceSQLPostgres(target sqlTarget, dataType string) (string, error) {
+	rctx := newReplaceContext(target, dataType)
 
-	var expr string
-	switch dataType {
+	expr, err := postgresExprForType(rctx)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("UPDATE %s SET %s = %s", target.table, target.column, expr), nil
+}
+
+func postgresExprForType(rctx replaceContext) (string, error) {
+	switch rctx.dataType {
 	case "email":
-		// user123456@example.com — N is 0–999999, always unique enough in practice
-		expr = fmt.Sprintf("'user' || (%s %% 1000000) || '@example.com'", h)
+		return fmt.Sprintf("'user' || (%s %% 1000000) || '@example.com'", rctx.h32), nil
 	case "name":
-		// User12345 — simple, obviously synthetic
-		expr = fmt.Sprintf("'User' || (%s %% 100000)", h)
+		return fmt.Sprintf("'User' || (%s %% 100000)", rctx.h32), nil
 	case "phone":
-		// +1-555-01xx-xxxx — NANP 555-01xx range is reserved for fiction
-		expr = fmt.Sprintf(
+		return fmt.Sprintf(
 			"'+1-555-01' || lpad((%s %% 99)::text, 2, '0') || '-' || lpad(((%s >> 8) %% 9000 + 1000)::text, 4, '0')",
-			h, h,
-		)
+			rctx.h32, rctx.h32,
+		), nil
 	case "ip":
-		// 10.x.x.x — RFC 1918 private range, never routes on the public internet
-		expr = fmt.Sprintf(
+		return fmt.Sprintf(
 			"'10.' || (%s %% 256)::text || '.' || ((%s >> 8) %% 256)::text || '.' || ((%s >> 16) %% 256)::text",
-			h, h, h,
-		)
+			rctx.h32, rctx.h32, rctx.h32,
+		), nil
 	case "url":
-		// https://example.com/r/<12-char hex> — example.com is IANA reserved
-		expr = fmt.Sprintf("'https://example.com/r/' || left(%s, 12)", h64)
+		return fmt.Sprintf("'https://example.com/r/' || left(%s, 12)", rctx.h64), nil
 	case "uuid":
-		// UUID v4-shaped value derived from md5 of the original
-		expr = fmt.Sprintf("md5(%s::text)::uuid", c)
+		return fmt.Sprintf("md5(%s::text)::uuid", rctx.column), nil
 	default:
-		return "", fmt.Errorf("unknown replace type %q", dataType)
+		return "", fmt.Errorf("unknown replace type %q", rctx.dataType)
 	}
-	return fmt.Sprintf("UPDATE %s SET %s = %s", t, c, expr), nil
 }
 
-func replaceSQLMySQL(t, c, dataType string) (string, error) {
-	// h: ABS(CRC32(col)) — fast 32-bit hash
-	h := fmt.Sprintf("ABS(CRC32(%s))", c)
+func replaceSQLMySQL(target sqlTarget, dataType string) (string, error) {
+	rctx := newMySQLReplaceContext(target, dataType)
 
-	var expr string
-	switch dataType {
-	case "email":
-		expr = fmt.Sprintf("CONCAT('user', %s %% 1000000, '@example.com')", h)
-	case "name":
-		expr = fmt.Sprintf("CONCAT('User', %s %% 100000)", h)
-	case "phone":
-		// +1-555-01xx-xxxx
-		expr = fmt.Sprintf(
-			"CONCAT('+1-555-01', LPAD(%s %% 99, 2, '0'), '-', LPAD(((%s >> 8) %% 9000) + 1000, 4, '0'))",
-			h, h,
-		)
-	case "ip":
-		expr = fmt.Sprintf(
-			"CONCAT('10.', %s %% 256, '.', (%s >> 8) %% 256, '.', (%s >> 16) %% 256)",
-			h, h, h,
-		)
-	case "url":
-		expr = fmt.Sprintf("CONCAT('https://example.com/r/', LEFT(MD5(%s), 12))", c)
-	case "uuid":
-		// UUID v4-shaped hex from MD5
-		expr = fmt.Sprintf(
-			"LOWER(CONCAT(LEFT(MD5(%s),8),'-',MID(MD5(%s),9,4),'-4',MID(MD5(%s),13,3),'-',MID(MD5(%s),17,4),'-',RIGHT(MD5(%s),12)))",
-			c, c, c, c, c,
-		)
-	default:
-		return "", fmt.Errorf("unknown replace type %q", dataType)
+	expr, err := mysqlExprForType(rctx)
+	if err != nil {
+		return "", err
 	}
-	return fmt.Sprintf("UPDATE %s SET %s = %s", t, c, expr), nil
+	return fmt.Sprintf("UPDATE %s SET %s = %s", target.table, target.column, expr), nil
+}
+
+func mysqlExprForType(rctx replaceContext) (string, error) {
+	switch rctx.dataType {
+	case "email":
+		return fmt.Sprintf("CONCAT('user', %s %% 1000000, '@example.com')", rctx.h32), nil
+	case "name":
+		return fmt.Sprintf("CONCAT('User', %s %% 100000)", rctx.h32), nil
+	case "phone":
+		return fmt.Sprintf(
+			"CONCAT('+1-555-01', LPAD(%s %% 99, 2, '0'), '-', LPAD(((%s >> 8) %% 9000) + 1000, 4, '0'))",
+			rctx.h32, rctx.h32,
+		), nil
+	case "ip":
+		return fmt.Sprintf(
+			"CONCAT('10.', %s %% 256, '.', (%s >> 8) %% 256, '.', (%s >> 16) %% 256)",
+			rctx.h32, rctx.h32, rctx.h32,
+		), nil
+	case "url":
+		return fmt.Sprintf("CONCAT('https://example.com/r/', LEFT(MD5(%s), 12))", rctx.column), nil
+	case "uuid":
+		return fmt.Sprintf(
+			"LOWER(CONCAT(LEFT(MD5(%s),8),'-',MID(MD5(%s),9,4),'-4',MID(MD5(%s),13,3),'-',MID(MD5(%s),17,4),'-',RIGHT(MD5(%s),12)))",
+			rctx.column, rctx.column, rctx.column, rctx.column, rctx.column,
+		), nil
+	default:
+		return "", fmt.Errorf("unknown replace type %q", rctx.dataType)
+	}
 }
 
 // hashSQL generates a one-way SHA-256 hex digest expression.
-func hashSQL(eng, t, c string) string {
-	switch eng {
+func hashSQL(target sqlTarget) string {
+	switch target.engine {
 	case "mysql":
-		return fmt.Sprintf("UPDATE %s SET %s = SHA2(%s, 256)", t, c, c)
+		return fmt.Sprintf("UPDATE %s SET %s = SHA2(%s, 256)", target.table, target.column, target.column)
 	default: // postgres
-		return fmt.Sprintf("UPDATE %s SET %s = encode(sha256(%s::bytea), 'hex')", t, c, c)
+		return fmt.Sprintf("UPDATE %s SET %s = encode(sha256(%s::bytea), 'hex')", target.table, target.column, target.column)
 	}
 }
 

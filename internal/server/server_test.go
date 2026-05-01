@@ -21,8 +21,8 @@ import (
 
 type authStub struct{}
 
-func (a *authStub) Authenticate(_ context.Context, authHeader string) (*oidc.Principal, error) {
-	switch authHeader {
+func (a *authStub) Authenticate(_ context.Context, h oidc.AuthHeader) (*oidc.Principal, error) {
+	switch h {
 	case "Bearer owner-token":
 		return &oidc.Principal{Subject: "user-1"}, nil
 	case "Bearer admin-token":

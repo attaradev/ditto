@@ -22,11 +22,10 @@ func TestValidatorAuthenticate(t *testing.T) {
 	}
 
 	validator := New(Config{
-		Issuer:     "https://issuer.example.com/",
-		Audience:   "ditto-ci",
-		JWKSURL:    "https://jwks.example.com/keys",
-		AdminClaim: "role",
-		AdminValue: "admin",
+		Issuer:    "https://issuer.example.com/",
+		Audience:  "ditto-ci",
+		JWKSURL:   "https://jwks.example.com/keys",
+		AdminRule: AdminRule{Key: "role", Value: "admin"},
 	})
 	validator.httpClient = staticJWKSClient(t, privateKey)
 
@@ -38,7 +37,7 @@ func TestValidatorAuthenticate(t *testing.T) {
 		"role": "admin",
 	})
 
-	principal, err := validator.Authenticate(t.Context(), "Bearer "+token)
+	principal, err := validator.Authenticate(t.Context(), AuthHeader("Bearer "+token))
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -70,7 +69,7 @@ func TestValidatorRejectsWrongAudience(t *testing.T) {
 		"exp": time.Now().Add(time.Hour).Unix(),
 	})
 
-	if _, err := validator.Authenticate(t.Context(), "Bearer "+token); err == nil {
+	if _, err := validator.Authenticate(t.Context(), AuthHeader("Bearer "+token)); err == nil {
 		t.Fatal("Authenticate: expected error for wrong audience")
 	}
 }

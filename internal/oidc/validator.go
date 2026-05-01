@@ -23,12 +23,24 @@ import (
 
 var ErrUnauthorized = errors.New("unauthorized")
 
+// AuthHeader is the value of the HTTP Authorization header passed to Authenticate.
+type AuthHeader string
+
+// compactJWT is a raw compact-serialised JWT (header.claims.signature).
+type compactJWT string
+
 type Config struct {
-	Issuer     string
-	Audience   string
-	JWKSURL    string
-	AdminClaim string
-	AdminValue string
+	Issuer    string
+	Audience  string
+	JWKSURL   string
+	AdminRule AdminRule
+}
+
+// AdminRule describes the JWT claim that grants admin access.
+// A principal is admin when the claim named Key equals Value.
+type AdminRule struct {
+	Key   string
+	Value string
 }
 
 type Principal struct {
@@ -42,8 +54,24 @@ type Validator struct {
 	httpClient *http.Client
 
 	mu        sync.RWMutex
-	keys      map[string]publicKey
+	keys      keySet
 	expiresAt time.Time
+}
+
+// keySet is the cache of JWKS public keys, keyed by key ID.
+type keySet map[string]publicKey
+
+func (ks keySet) find(kid string) (publicKey, bool) {
+	if kid != "" {
+		key, ok := ks[kid]
+		return key, ok
+	}
+	if len(ks) == 1 {
+		for _, key := range ks {
+			return key, true
+		}
+	}
+	return publicKey{}, false
 }
 
 type publicKey struct {
@@ -73,6 +101,29 @@ type jsonWebKey struct {
 	Crv string `json:"crv"`
 }
 
+// jwtToken holds the decoded parts of a compact-serialised JWT.
+type jwtToken struct {
+	header    jwtHeader
+	claims    jwtClaims
+	signed    []byte // header.claims — the input to the signature
+	signature []byte
+}
+
+// jwtClaims wraps the raw JSON claims map with typed accessors so callers
+// never need to perform string-key lookups or type assertions inline.
+type jwtClaims map[string]any
+
+func (c jwtClaims) issuer() string     { s, _ := c["iss"].(string); return s }
+func (c jwtClaims) subject() string    { s, _ := c["sub"].(string); return s }
+func (c jwtClaims) audience() any      { return c["aud"] }
+func (c jwtClaims) get(key string) any { return c[key] }
+func (c jwtClaims) isAdmin(rule AdminRule) bool {
+	return matchesClaim(c[rule.Key], rule.Value)
+}
+
+func (c jwtClaims) expiry() (int64, bool)    { return numericClaim(c["exp"]) }
+func (c jwtClaims) notBefore() (int64, bool) { return numericClaim(c["nbf"]) }
+
 func New(cfg Config) *Validator {
 	return &Validator{
 		cfg:        cfg,
@@ -80,80 +131,109 @@ func New(cfg Config) *Validator {
 	}
 }
 
-func (v *Validator) Authenticate(ctx context.Context, authHeader string) (*Principal, error) {
-	token := strings.TrimSpace(authHeader)
-	if !strings.HasPrefix(token, "Bearer ") {
-		return nil, ErrUnauthorized
-	}
-	token = strings.TrimSpace(strings.TrimPrefix(token, "Bearer "))
-	if token == "" {
-		return nil, ErrUnauthorized
-	}
-
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, ErrUnauthorized
-	}
-
-	var header jwtHeader
-	if err := decodeSegment(parts[0], &header); err != nil {
-		return nil, ErrUnauthorized
-	}
-	if header.Alg == "" || header.Alg == "none" {
-		return nil, ErrUnauthorized
-	}
-
-	claims := map[string]any{}
-	if err := decodeSegment(parts[1], &claims); err != nil {
-		return nil, ErrUnauthorized
-	}
-
-	key, err := v.keyFor(ctx, header.Kid)
+func (v *Validator) Authenticate(ctx context.Context, h AuthHeader) (*Principal, error) {
+	tok, err := parseJWT(h)
 	if err != nil {
 		return nil, err
 	}
 
-	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	key, err := v.keyFor(ctx, tok.header.Kid)
 	if err != nil {
-		return nil, ErrUnauthorized
+		return nil, err
 	}
-	if err := verifyJWTSignature(header.Alg, key.Key, parts[0]+"."+parts[1], signature); err != nil {
+
+	if err := tok.verifySignature(key.Key); err != nil {
 		return nil, ErrUnauthorized
 	}
 
-	if err := v.validateClaims(claims, time.Now()); err != nil {
+	if err := v.validateClaims(tok.claims, time.Now()); err != nil {
 		return nil, ErrUnauthorized
 	}
 
-	sub, _ := claims["sub"].(string)
 	return &Principal{
-		Subject: sub,
-		Claims:  claims,
-		IsAdmin: matchesClaim(claims[v.cfg.AdminClaim], v.cfg.AdminValue),
+		Subject: tok.claims.subject(),
+		Claims:  map[string]any(tok.claims),
+		IsAdmin: tok.claims.isAdmin(v.cfg.AdminRule),
 	}, nil
 }
 
-func (v *Validator) validateClaims(claims map[string]any, now time.Time) error {
-	iss, _ := claims["iss"].(string)
-	if iss != v.cfg.Issuer {
+// parseJWT extracts the Bearer token from authHeader and fully parses it into
+// a jwtToken, returning ErrUnauthorized for any structural problem.
+func parseJWT(h AuthHeader) (jwtToken, error) {
+	compact, err := extractBearerToken(h)
+	if err != nil {
+		return jwtToken{}, err
+	}
+	return decodeCompactJWT(compact)
+}
+
+// extractBearerToken strips the "Bearer " scheme from the Authorization header
+// and returns the raw compact token string.
+func extractBearerToken(h AuthHeader) (compactJWT, error) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(string(h)), "Bearer ")
+	if !ok {
+		return "", ErrUnauthorized
+	}
+	raw := strings.TrimSpace(rest)
+	if raw == "" {
+		return "", ErrUnauthorized
+	}
+	return compactJWT(raw), nil
+}
+
+// decodeCompactJWT decodes a compact-serialised JWT (header.claims.signature)
+// into a jwtToken without verifying the signature.
+func decodeCompactJWT(compact compactJWT) (jwtToken, error) {
+	parts := strings.Split(string(compact), ".")
+	if len(parts) != 3 {
+		return jwtToken{}, ErrUnauthorized
+	}
+
+	var header jwtHeader
+	if err := decodeSegment(parts[0], &header); err != nil {
+		return jwtToken{}, ErrUnauthorized
+	}
+	if header.Alg == "" || header.Alg == "none" {
+		return jwtToken{}, ErrUnauthorized
+	}
+
+	claims := jwtClaims{}
+	if err := decodeSegment(parts[1], &claims); err != nil {
+		return jwtToken{}, ErrUnauthorized
+	}
+
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return jwtToken{}, ErrUnauthorized
+	}
+
+	return jwtToken{
+		header:    header,
+		claims:    claims,
+		signed:    []byte(parts[0] + "." + parts[1]),
+		signature: signature,
+	}, nil
+}
+
+func (v *Validator) validateClaims(claims jwtClaims, now time.Time) error {
+	if claims.issuer() != v.cfg.Issuer {
 		return ErrUnauthorized
 	}
 
-	sub, _ := claims["sub"].(string)
-	if sub == "" {
+	if claims.subject() == "" {
 		return ErrUnauthorized
 	}
 
-	if !audienceContains(claims["aud"], v.cfg.Audience) {
+	if !audienceContains(claims.audience(), v.cfg.Audience) {
 		return ErrUnauthorized
 	}
 
-	exp, ok := numericClaim(claims["exp"])
+	exp, ok := claims.expiry()
 	if !ok || now.Unix() >= exp {
 		return ErrUnauthorized
 	}
 
-	if nbf, ok := numericClaim(claims["nbf"]); ok && now.Unix() < nbf {
+	if nbf, ok := claims.notBefore(); ok && now.Unix() < nbf {
 		return ErrUnauthorized
 	}
 
@@ -167,7 +247,7 @@ func (v *Validator) keyFor(ctx context.Context, kid string) (publicKey, error) {
 	v.mu.RUnlock()
 
 	if len(keys) > 0 && time.Now().Before(expiresAt) {
-		if key, ok := findKey(keys, kid); ok {
+		if key, ok := keys.find(kid); ok {
 			return key, nil
 		}
 	}
@@ -178,23 +258,10 @@ func (v *Validator) keyFor(ctx context.Context, kid string) (publicKey, error) {
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-	if key, ok := findKey(v.keys, kid); ok {
+	if key, ok := v.keys.find(kid); ok {
 		return key, nil
 	}
 	return publicKey{}, ErrUnauthorized
-}
-
-func findKey(keys map[string]publicKey, kid string) (publicKey, bool) {
-	if kid != "" {
-		key, ok := keys[kid]
-		return key, ok
-	}
-	if len(keys) == 1 {
-		for _, key := range keys {
-			return key, true
-		}
-	}
-	return publicKey{}, false
 }
 
 func (v *Validator) refreshKeys(ctx context.Context) error {
@@ -218,7 +285,7 @@ func (v *Validator) refreshKeys(ctx context.Context) error {
 		return fmt.Errorf("oidc: decode jwks: %w", err)
 	}
 
-	keys := make(map[string]publicKey, len(doc.Keys))
+	keys := make(keySet, len(doc.Keys))
 	for _, key := range doc.Keys {
 		pub, err := parseJWK(key)
 		if err != nil {
@@ -256,50 +323,58 @@ func cacheTTL(cacheControl string) time.Duration {
 func parseJWK(key jsonWebKey) (crypto.PublicKey, error) {
 	switch key.KTY {
 	case "RSA":
-		nBytes, err := base64.RawURLEncoding.DecodeString(key.N)
-		if err != nil {
-			return nil, fmt.Errorf("decode n: %w", err)
-		}
-		eBytes, err := base64.RawURLEncoding.DecodeString(key.E)
-		if err != nil {
-			return nil, fmt.Errorf("decode e: %w", err)
-		}
-		e := 0
-		for _, b := range eBytes {
-			e = e<<8 | int(b)
-		}
-		if e == 0 {
-			return nil, fmt.Errorf("invalid rsa exponent")
-		}
-		return &rsa.PublicKey{
-			N: new(big.Int).SetBytes(nBytes),
-			E: e,
-		}, nil
+		return parseRSAJWK(key)
 	case "EC":
-		curve, err := ellipticCurve(key.Crv)
-		if err != nil {
-			return nil, err
-		}
-		xBytes, err := base64.RawURLEncoding.DecodeString(key.X)
-		if err != nil {
-			return nil, fmt.Errorf("decode x: %w", err)
-		}
-		yBytes, err := base64.RawURLEncoding.DecodeString(key.Y)
-		if err != nil {
-			return nil, fmt.Errorf("decode y: %w", err)
-		}
-		pub := &ecdsa.PublicKey{
-			Curve: curve,
-			X:     new(big.Int).SetBytes(xBytes),
-			Y:     new(big.Int).SetBytes(yBytes),
-		}
-		if !curve.IsOnCurve(pub.X, pub.Y) { //nolint:staticcheck // crypto/ecdh migration requires restructuring EC key parsing
-			return nil, fmt.Errorf("ec key is not on curve")
-		}
-		return pub, nil
+		return parseECJWK(key)
 	default:
 		return nil, fmt.Errorf("unsupported jwk kty %q", key.KTY)
 	}
+}
+
+func parseRSAJWK(key jsonWebKey) (*rsa.PublicKey, error) {
+	nBytes, err := base64.RawURLEncoding.DecodeString(key.N)
+	if err != nil {
+		return nil, fmt.Errorf("decode n: %w", err)
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(key.E)
+	if err != nil {
+		return nil, fmt.Errorf("decode e: %w", err)
+	}
+	e := 0
+	for _, b := range eBytes {
+		e = e<<8 | int(b)
+	}
+	if e == 0 {
+		return nil, fmt.Errorf("invalid rsa exponent")
+	}
+	return &rsa.PublicKey{
+		N: new(big.Int).SetBytes(nBytes),
+		E: e,
+	}, nil
+}
+
+func parseECJWK(key jsonWebKey) (*ecdsa.PublicKey, error) {
+	curve, err := ellipticCurve(key.Crv)
+	if err != nil {
+		return nil, err
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(key.X)
+	if err != nil {
+		return nil, fmt.Errorf("decode x: %w", err)
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(key.Y)
+	if err != nil {
+		return nil, fmt.Errorf("decode y: %w", err)
+	}
+	pub := &ecdsa.PublicKey{
+		Curve: curve,
+		X:     new(big.Int).SetBytes(xBytes),
+		Y:     new(big.Int).SetBytes(yBytes),
+	}
+	if !curve.IsOnCurve(pub.X, pub.Y) { //nolint:staticcheck // crypto/ecdh migration requires restructuring EC key parsing
+		return nil, fmt.Errorf("ec key is not on curve")
+	}
+	return pub, nil
 }
 
 func ellipticCurve(name string) (elliptic.Curve, error) {
@@ -315,59 +390,80 @@ func ellipticCurve(name string) (elliptic.Curve, error) {
 	}
 }
 
-func verifyJWTSignature(alg string, key crypto.PublicKey, signed string, signature []byte) error {
-	hash, err := hashForAlg(alg)
+// digest bundles a hash algorithm, its computed output, and the raw JWT signature,
+// carrying all verification material through the verify helpers as a unit.
+type digest struct {
+	hash crypto.Hash
+	sum  []byte
+	sig  []byte // raw JWT signature bytes
+}
+
+func (tok jwtToken) verifySignature(key crypto.PublicKey) error {
+	d, err := tok.computeDigest()
 	if err != nil {
 		return err
 	}
-	h := hash.New()
-	_, _ = h.Write([]byte(signed))
-	sum := h.Sum(nil)
 
-	switch alg {
-	case "RS256", "RS384", "RS512":
-		pub, ok := key.(*rsa.PublicKey)
-		if !ok {
-			return ErrUnauthorized
-		}
-		return rsa.VerifyPKCS1v15(pub, hash, sum, signature)
-	case "PS256", "PS384", "PS512":
-		pub, ok := key.(*rsa.PublicKey)
-		if !ok {
-			return ErrUnauthorized
-		}
-		return rsa.VerifyPSS(pub, hash, sum, signature, nil)
-	case "ES256", "ES384", "ES512":
-		pub, ok := key.(*ecdsa.PublicKey)
-		if !ok {
-			return ErrUnauthorized
-		}
-		size := (pub.Curve.Params().BitSize + 7) / 8
-		if len(signature) != size*2 {
-			return ErrUnauthorized
-		}
-		r := new(big.Int).SetBytes(signature[:size])
-		s := new(big.Int).SetBytes(signature[size:])
-		if !ecdsa.Verify(pub, sum, r, s) {
-			return ErrUnauthorized
-		}
-		return nil
+	switch {
+	case strings.HasPrefix(tok.header.Alg, "RS"):
+		return verifyRSAPKCS1v15(key, d)
+	case strings.HasPrefix(tok.header.Alg, "PS"):
+		return verifyRSAPSS(key, d)
+	case strings.HasPrefix(tok.header.Alg, "ES"):
+		return verifyECDSA(key, d)
 	default:
 		return ErrUnauthorized
 	}
 }
 
-func hashForAlg(alg string) (crypto.Hash, error) {
-	switch alg {
+func (tok jwtToken) computeDigest() (digest, error) {
+	var h crypto.Hash
+	switch tok.header.Alg {
 	case "RS256", "PS256", "ES256":
-		return crypto.SHA256, nil
+		h = crypto.SHA256
 	case "RS384", "PS384", "ES384":
-		return crypto.SHA384, nil
+		h = crypto.SHA384
 	case "RS512", "PS512", "ES512":
-		return crypto.SHA512, nil
+		h = crypto.SHA512
 	default:
-		return 0, fmt.Errorf("unsupported alg %q", alg)
+		return digest{}, fmt.Errorf("unsupported alg %q", tok.header.Alg)
 	}
+	hw := h.New()
+	_, _ = hw.Write(tok.signed)
+	return digest{hash: h, sum: hw.Sum(nil), sig: tok.signature}, nil
+}
+
+func verifyRSAPKCS1v15(key crypto.PublicKey, d digest) error {
+	pub, ok := key.(*rsa.PublicKey)
+	if !ok {
+		return ErrUnauthorized
+	}
+	return rsa.VerifyPKCS1v15(pub, d.hash, d.sum, d.sig)
+}
+
+func verifyRSAPSS(key crypto.PublicKey, d digest) error {
+	pub, ok := key.(*rsa.PublicKey)
+	if !ok {
+		return ErrUnauthorized
+	}
+	return rsa.VerifyPSS(pub, d.hash, d.sum, d.sig, nil)
+}
+
+func verifyECDSA(key crypto.PublicKey, d digest) error {
+	pub, ok := key.(*ecdsa.PublicKey)
+	if !ok {
+		return ErrUnauthorized
+	}
+	size := (pub.Curve.Params().BitSize + 7) / 8
+	if len(d.sig) != size*2 {
+		return ErrUnauthorized
+	}
+	r := new(big.Int).SetBytes(d.sig[:size])
+	s := new(big.Int).SetBytes(d.sig[size:])
+	if !ecdsa.Verify(pub, d.sum, r, s) {
+		return ErrUnauthorized
+	}
+	return nil
 }
 
 func decodeSegment(segment string, dst any) error {

@@ -14,6 +14,8 @@ import (
 	"github.com/attaradev/ditto/internal/config"
 )
 
+// DBConn bundles an engine name with a DSN, eliminating loose primitive pairs
+// that appear throughout the integration helpers.
 type Snapshot struct {
 	Users          []UserRow
 	PaymentMethods []PaymentMethodRow
@@ -91,28 +93,31 @@ func ObfuscationRulesWithWarnOnlyProbe(warnOnly bool) []config.ObfuscationRule {
 }
 
 // SeedObfuscationDemo creates the canonical schema and inserts synthetic PII.
-func SeedObfuscationDemo(t *testing.T, engineName, dsn string) Snapshot {
+func SeedObfuscationDemo(t *testing.T, conn DBConn) Snapshot {
 	t.Helper()
 
-	db := OpenDB(t, engineName, dsn)
-	for _, stmt := range schemaStatements(engineName) {
+	db := OpenDB(t, conn)
+	execStatements(t, db, "seed schema", schemaStatements(conn.EngineName))
+	execStatements(t, db, "seed data", seedStatements())
+	return SnapshotObfuscationDemo(t, conn)
+}
+
+// execStatements executes each SQL statement in order, calling t.Fatal on the
+// first error. The label is used only in the failure message.
+func execStatements(t *testing.T, db *sql.DB, label string, stmts []string) {
+	t.Helper()
+	for _, stmt := range stmts {
 		if _, err := db.ExecContext(context.Background(), stmt); err != nil {
-			t.Fatalf("seed schema (%s): %v", engineName, err)
+			t.Fatalf("%s: %v", label, err)
 		}
 	}
-	for _, stmt := range seedStatements() {
-		if _, err := db.ExecContext(context.Background(), stmt); err != nil {
-			t.Fatalf("seed data (%s): %v", engineName, err)
-		}
-	}
-	return SnapshotObfuscationDemo(t, engineName, dsn)
 }
 
 // SnapshotObfuscationDemo reads the canonical fixture tables in stable order.
-func SnapshotObfuscationDemo(t *testing.T, engineName, dsn string) Snapshot {
+func SnapshotObfuscationDemo(t *testing.T, conn DBConn) Snapshot {
 	t.Helper()
 
-	db := OpenDB(t, engineName, dsn)
+	db := OpenDB(t, conn)
 	return Snapshot{
 		Users:          queryUsers(t, db),
 		PaymentMethods: queryPaymentMethods(t, db),
@@ -146,13 +151,32 @@ func AssertObfuscatedSnapshot(t *testing.T, raw, got Snapshot) {
 		t.Fatalf("audit_logs length: got %d, want %d", len(got.AuditLogs), len(raw.AuditLogs))
 	}
 
-	emailMap := make(map[string]string, len(raw.Users))
-	uuidMap := make(map[string]string, len(raw.Users))
-	hashMap := make(map[string]string, len(raw.Users))
+	// obfuscationMaps track cross-table referential consistency.
+	maps := obfuscationMaps{
+		email: make(map[string]string, len(raw.Users)),
+		uuid:  make(map[string]string, len(raw.Users)),
+	}
 
-	for i := range raw.Users {
-		want := raw.Users[i]
-		gotUser := got.Users[i]
+	assertUsersObfuscated(t, raw.Users, got.Users, maps)
+	assertPaymentMethodsObfuscated(t, raw.PaymentMethods, got.PaymentMethods, maps.email)
+	assertAuditLogsObfuscated(t, raw.AuditLogs, got.AuditLogs, maps.uuid)
+}
+
+// obfuscationMaps accumulates raw→obfuscated mappings that must be consistent
+// across tables (e.g. the same email address must obfuscate to the same value
+// wherever it appears).
+type obfuscationMaps struct {
+	email map[string]string
+	uuid  map[string]string
+}
+
+func assertUsersObfuscated(t *testing.T, raw, got []UserRow, maps obfuscationMaps) {
+	t.Helper()
+
+	hashMap := make(map[string]string, len(raw))
+	for i := range raw {
+		want := raw[i]
+		gotUser := got[i]
 
 		if gotUser.ID != want.ID {
 			t.Errorf("users[%d].id: got %d, want %d", i, gotUser.ID, want.ID)
@@ -160,26 +184,30 @@ func AssertObfuscatedSnapshot(t *testing.T, raw, got Snapshot) {
 		if gotUser.Role != want.Role {
 			t.Errorf("users[%d].role: got %q, want %q", i, gotUser.Role, want.Role)
 		}
-		assertChangedMatch(t, fmt.Sprintf("users[%d].email", i), gotUser.Email, want.Email, emailPattern)
-		assertChangedMatch(t, fmt.Sprintf("users[%d].full_name", i), gotUser.FullName, want.FullName, namePattern)
-		assertChangedMatch(t, fmt.Sprintf("users[%d].phone", i), gotUser.Phone, want.Phone, phonePattern)
+		col(fmt.Sprintf("users[%d].email", i), want.Email, gotUser.Email).assertChangedMatch(t, emailPattern)
+		col(fmt.Sprintf("users[%d].full_name", i), want.FullName, gotUser.FullName).assertChangedMatch(t, namePattern)
+		col(fmt.Sprintf("users[%d].phone", i), want.Phone, gotUser.Phone).assertChangedMatch(t, phonePattern)
 		if gotUser.SSN != nil {
 			t.Errorf("users[%d].ssn: got %q, want NULL", i, *gotUser.SSN)
 		}
 		if gotUser.Notes != "[redacted]" {
 			t.Errorf("users[%d].notes: got %q, want %q", i, gotUser.Notes, "[redacted]")
 		}
-		assertChangedMatch(t, fmt.Sprintf("users[%d].api_key", i), gotUser.APIKey, want.APIKey, hashPattern)
-		assertChangedMatch(t, fmt.Sprintf("users[%d].account_uuid", i), gotUser.AccountUUID, want.AccountUUID, uuidPattern)
+		col(fmt.Sprintf("users[%d].api_key", i), want.APIKey, gotUser.APIKey).assertChangedMatch(t, hashPattern)
+		col(fmt.Sprintf("users[%d].account_uuid", i), want.AccountUUID, gotUser.AccountUUID).assertChangedMatch(t, uuidPattern)
 
-		assertDeterministic(t, "users.api_key", hashMap, want.APIKey, gotUser.APIKey)
-		assertDeterministic(t, "users.email", emailMap, want.Email, gotUser.Email)
-		assertDeterministic(t, "users.account_uuid", uuidMap, want.AccountUUID, gotUser.AccountUUID)
+		col("users.api_key", want.APIKey, gotUser.APIKey).assertDeterministic(t, hashMap)
+		col("users.email", want.Email, gotUser.Email).assertDeterministic(t, maps.email)
+		col("users.account_uuid", want.AccountUUID, gotUser.AccountUUID).assertDeterministic(t, maps.uuid)
 	}
+}
 
-	for i := range raw.PaymentMethods {
-		want := raw.PaymentMethods[i]
-		gotMethod := got.PaymentMethods[i]
+func assertPaymentMethodsObfuscated(t *testing.T, raw, got []PaymentMethodRow, emailMap map[string]string) {
+	t.Helper()
+
+	for i := range raw {
+		want := raw[i]
+		gotMethod := got[i]
 
 		if gotMethod.ID != want.ID {
 			t.Errorf("payment_methods[%d].id: got %d, want %d", i, gotMethod.ID, want.ID)
@@ -191,15 +219,19 @@ func AssertObfuscatedSnapshot(t *testing.T, raw, got Snapshot) {
 			t.Errorf("payment_methods[%d].brand: got %q, want %q", i, gotMethod.Brand, want.Brand)
 		}
 		assertMaskedCard(t, fmt.Sprintf("payment_methods[%d].card_number", i), gotMethod.CardNumber, want.CardNumber)
-		assertChangedMatch(t, fmt.Sprintf("payment_methods[%d].billing_email", i), gotMethod.BillingEmail, want.BillingEmail, emailPattern)
+		col(fmt.Sprintf("payment_methods[%d].billing_email", i), want.BillingEmail, gotMethod.BillingEmail).assertChangedMatch(t, emailPattern)
 		if mapped := emailMap[want.BillingEmail]; mapped != "" && gotMethod.BillingEmail != mapped {
 			t.Errorf("payment_methods[%d].billing_email: got %q, want %q to match users.email mapping", i, gotMethod.BillingEmail, mapped)
 		}
 	}
+}
 
-	for i := range raw.AuditLogs {
-		want := raw.AuditLogs[i]
-		gotLog := got.AuditLogs[i]
+func assertAuditLogsObfuscated(t *testing.T, raw, got []AuditLogRow, uuidMap map[string]string) {
+	t.Helper()
+
+	for i := range raw {
+		want := raw[i]
+		gotLog := got[i]
 
 		if gotLog.ID != want.ID {
 			t.Errorf("audit_logs[%d].id: got %d, want %d", i, gotLog.ID, want.ID)
@@ -210,9 +242,9 @@ func AssertObfuscatedSnapshot(t *testing.T, raw, got Snapshot) {
 		if gotLog.Action != want.Action {
 			t.Errorf("audit_logs[%d].action: got %q, want %q", i, gotLog.Action, want.Action)
 		}
-		assertChangedMatch(t, fmt.Sprintf("audit_logs[%d].ip_address", i), gotLog.IPAddress, want.IPAddress, ipPattern)
-		assertChangedMatch(t, fmt.Sprintf("audit_logs[%d].target_url", i), gotLog.TargetURL, want.TargetURL, urlPattern)
-		assertChangedMatch(t, fmt.Sprintf("audit_logs[%d].actor_uuid", i), gotLog.ActorUUID, want.ActorUUID, uuidPattern)
+		col(fmt.Sprintf("audit_logs[%d].ip_address", i), want.IPAddress, gotLog.IPAddress).assertChangedMatch(t, ipPattern)
+		col(fmt.Sprintf("audit_logs[%d].target_url", i), want.TargetURL, gotLog.TargetURL).assertChangedMatch(t, urlPattern)
+		col(fmt.Sprintf("audit_logs[%d].actor_uuid", i), want.ActorUUID, gotLog.ActorUUID).assertChangedMatch(t, uuidPattern)
 		if mapped := uuidMap[want.ActorUUID]; mapped != "" && gotLog.ActorUUID != mapped {
 			t.Errorf("audit_logs[%d].actor_uuid: got %q, want %q to match users.account_uuid mapping", i, gotLog.ActorUUID, mapped)
 		}
@@ -361,75 +393,87 @@ func queryUsers(t *testing.T, db *sql.DB) []UserRow {
 
 func queryPaymentMethods(t *testing.T, db *sql.DB) []PaymentMethodRow {
 	t.Helper()
-
-	rows, err := db.QueryContext(context.Background(), `
+	return queryRows(t, db, "payment_methods", `
 		SELECT id, user_id, brand, card_number, billing_email
 		FROM payment_methods
-		ORDER BY id`)
-	if err != nil {
-		t.Fatalf("query payment_methods: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []PaymentMethodRow
-	for rows.Next() {
-		var row PaymentMethodRow
-		if err := rows.Scan(&row.ID, &row.UserID, &row.Brand, &row.CardNumber, &row.BillingEmail); err != nil {
-			t.Fatalf("scan payment_methods: %v", err)
-		}
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate payment_methods: %v", err)
-	}
-	return out
+		ORDER BY id`,
+		func(rows *sql.Rows) (PaymentMethodRow, error) {
+			var row PaymentMethodRow
+			return row, rows.Scan(&row.ID, &row.UserID, &row.Brand, &row.CardNumber, &row.BillingEmail)
+		})
 }
 
 func queryAuditLogs(t *testing.T, db *sql.DB) []AuditLogRow {
 	t.Helper()
-
-	rows, err := db.QueryContext(context.Background(), `
+	return queryRows(t, db, "audit_logs", `
 		SELECT id, user_id, action, ip_address, target_url, actor_uuid
 		FROM audit_logs
-		ORDER BY id`)
+		ORDER BY id`,
+		func(rows *sql.Rows) (AuditLogRow, error) {
+			var row AuditLogRow
+			return row, rows.Scan(&row.ID, &row.UserID, &row.Action, &row.IPAddress, &row.TargetURL, &row.ActorUUID)
+		})
+}
+
+// queryRows is a generic helper that executes query, iterates the result set
+// using scan, and returns all rows — eliminating the boilerplate duplicated
+// across every table query function.
+func queryRows[T any](t *testing.T, db *sql.DB, table, query string, scan func(*sql.Rows) (T, error)) []T {
+	t.Helper()
+
+	rows, err := db.QueryContext(context.Background(), query)
 	if err != nil {
-		t.Fatalf("query audit_logs: %v", err)
+		t.Fatalf("query %s: %v", table, err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []AuditLogRow
+	var out []T
 	for rows.Next() {
-		var row AuditLogRow
-		if err := rows.Scan(&row.ID, &row.UserID, &row.Action, &row.IPAddress, &row.TargetURL, &row.ActorUUID); err != nil {
-			t.Fatalf("scan audit_logs: %v", err)
+		row, err := scan(rows)
+		if err != nil {
+			t.Fatalf("scan %s: %v", table, err)
 		}
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate audit_logs: %v", err)
+		t.Fatalf("iterate %s: %v", table, err)
 	}
 	return out
 }
 
-func assertChangedMatch(t *testing.T, field, got, raw string, pattern *regexp.Regexp) {
+// columnAssertion bundles the three values that travel together whenever a
+// single obfuscated column is checked: its name, the raw original, and the
+// obfuscated result.
+type columnAssertion struct {
+	field string
+	raw   string
+	got   string
+}
+
+// col is a short constructor for columnAssertion used at call sites.
+func col(field, raw, got string) columnAssertion {
+	return columnAssertion{field: field, raw: raw, got: got}
+}
+
+func (c columnAssertion) assertChangedMatch(t *testing.T, pattern *regexp.Regexp) {
 	t.Helper()
 
-	if got == raw {
-		t.Errorf("%s: value was not obfuscated (%q)", field, got)
+	if c.got == c.raw {
+		t.Errorf("%s: value was not obfuscated (%q)", c.field, c.got)
 	}
-	if !pattern.MatchString(got) {
-		t.Errorf("%s: got %q, pattern %q", field, got, pattern.String())
+	if !pattern.MatchString(c.got) {
+		t.Errorf("%s: got %q, pattern %q", c.field, c.got, pattern.String())
 	}
 }
 
-func assertDeterministic(t *testing.T, field string, seen map[string]string, raw, got string) {
+func (c columnAssertion) assertDeterministic(t *testing.T, seen map[string]string) {
 	t.Helper()
 
-	if prev, ok := seen[raw]; ok && prev != got {
-		t.Errorf("%s deterministic mapping: raw %q mapped to both %q and %q", field, raw, prev, got)
+	if prev, ok := seen[c.raw]; ok && prev != c.got {
+		t.Errorf("%s deterministic mapping: raw %q mapped to both %q and %q", c.field, c.raw, prev, c.got)
 		return
 	}
-	seen[raw] = got
+	seen[c.raw] = c.got
 }
 
 func assertMaskedCard(t *testing.T, field, got, raw string) {

@@ -31,7 +31,7 @@ type Refresher interface {
 }
 
 type Authenticator interface {
-	Authenticate(ctx context.Context, authHeader string) (*oidc.Principal, error)
+	Authenticate(ctx context.Context, h oidc.AuthHeader) (*oidc.Principal, error)
 }
 
 type StatusResponse = apiv2.StatusResponse
@@ -264,7 +264,7 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		principal, err := s.auth.Authenticate(r.Context(), r.Header.Get("Authorization"))
+		principal, err := s.auth.Authenticate(r.Context(), oidc.AuthHeader(r.Header.Get("Authorization")))
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
