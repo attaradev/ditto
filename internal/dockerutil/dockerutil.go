@@ -37,24 +37,12 @@ func resolveHost(
 	getEnv func(string) string,
 	probe func(context.Context, string) error,
 ) (string, error) {
-	if configuredHost != "" {
-		if err := validateHost(configuredHost); err != nil {
-			return "", fmt.Errorf("docker runtime: invalid docker_host %q: %w", configuredHost, err)
-		}
-		if err := probe(ctx, configuredHost); err != nil {
-			return "", fmt.Errorf("docker runtime: docker_host=%s is not reachable: %w", configuredHost, err)
-		}
-		return configuredHost, nil
+	if host, err := resolvePreferredHost(ctx, configuredHost, "docker_host", probe); host != "" || err != nil {
+		return host, err
 	}
 
-	if envHost := getEnv("DOCKER_HOST"); envHost != "" {
-		if err := validateHost(envHost); err != nil {
-			return "", fmt.Errorf("docker runtime: invalid DOCKER_HOST %q: %w", envHost, err)
-		}
-		if err := probe(ctx, envHost); err != nil {
-			return "", fmt.Errorf("docker runtime: DOCKER_HOST=%s is not reachable: %w", envHost, err)
-		}
-		return envHost, nil
+	if host, err := resolvePreferredHost(ctx, getEnv("DOCKER_HOST"), "DOCKER_HOST", probe); host != "" || err != nil {
+		return host, err
 	}
 
 	if err := probe(ctx, client.DefaultDockerHost); err == nil {
@@ -64,6 +52,27 @@ func resolveHost(
 	return "", fmt.Errorf(
 		"docker runtime: no Docker-compatible daemon found — start Docker Desktop or another Docker-compatible runtime, or set DOCKER_HOST (e.g. export DOCKER_HOST=unix:///var/run/docker.sock)",
 	)
+}
+
+func resolvePreferredHost(
+	ctx context.Context,
+	host string,
+	label string,
+	probe func(context.Context, string) error,
+) (string, error) {
+	if host == "" {
+		return "", nil
+	}
+	if err := validateHost(host); err != nil {
+		return "", fmt.Errorf("docker runtime: invalid %s %q: %w", label, host, err)
+	}
+	if err := probe(ctx, host); err != nil {
+		if label == "DOCKER_HOST" {
+			return "", fmt.Errorf("docker runtime: DOCKER_HOST=%s is not reachable: %w", host, err)
+		}
+		return "", fmt.Errorf("docker runtime: %s=%s is not reachable: %w", label, host, err)
+	}
+	return host, nil
 }
 
 func validateHost(host string) error {
@@ -112,72 +121,27 @@ func EnsureImage(ctx context.Context, cli *client.Client, imageRef string) error
 	return nil
 }
 
+// RunRequest describes a short-lived helper container execution.
+type RunRequest struct {
+	Config        *container.Config
+	HostConfig    *container.HostConfig
+	NetworkConfig *network.NetworkingConfig
+	Name          string
+	Stdin         io.Reader
+}
+
 // RunContainer runs a short-lived helper container and removes it afterwards.
 // On failure it includes captured container output in the returned error.
-func RunContainer(
-	ctx context.Context,
-	cli *client.Client,
-	cfg *container.Config,
-	hostCfg *container.HostConfig,
-	name string,
-) error {
-	return RunContainerOnNetwork(ctx, cli, cfg, hostCfg, nil, name)
-}
-
-// RunContainerWithInput is like RunContainer, but streams stdin into the helper
-// container. It is useful for clients such as mysql that can restore from stdin.
-func RunContainerWithInput(
-	ctx context.Context,
-	cli *client.Client,
-	cfg *container.Config,
-	hostCfg *container.HostConfig,
-	name string,
-	stdin io.Reader,
-) error {
-	return runContainer(ctx, cli, cfg, hostCfg, nil, name, stdin)
-}
-
-// RunContainerOnNetwork is like RunContainer but attaches the container to a
-// named Docker network via netCfg. Pass nil for netCfg to use the default
-// bridge network (equivalent to RunContainer).
-func RunContainerOnNetwork(
-	ctx context.Context,
-	cli *client.Client,
-	cfg *container.Config,
-	hostCfg *container.HostConfig,
-	netCfg *network.NetworkingConfig,
-	name string,
-) error {
-	return runContainer(ctx, cli, cfg, hostCfg, netCfg, name, nil)
-}
-
-func runContainer(
-	ctx context.Context,
-	cli *client.Client,
-	cfg *container.Config,
-	hostCfg *container.HostConfig,
-	netCfg *network.NetworkingConfig,
-	name string,
-	stdin io.Reader,
-) error {
-	if cfg == nil {
-		return fmt.Errorf("docker runtime: missing container config")
+func RunContainer(ctx context.Context, cli *client.Client, req RunRequest) error {
+	if err := validateRunRequest(req); err != nil {
+		return err
 	}
-	if cfg.Image == "" {
-		return fmt.Errorf("docker runtime: missing container image")
-	}
-
-	if err := EnsureImage(ctx, cli, cfg.Image); err != nil {
+	if err := EnsureImage(ctx, cli, req.Config.Image); err != nil {
 		return err
 	}
 
-	cfgCopy := *cfg
-	if stdin != nil {
-		cfgCopy.OpenStdin = true
-		cfgCopy.AttachStdin = true
-	}
-
-	resp, err := cli.ContainerCreate(ctx, &cfgCopy, hostCfg, netCfg, nil, name)
+	cfgCopy := copyContainerConfig(req.Config, req.Stdin != nil)
+	resp, err := cli.ContainerCreate(ctx, cfgCopy, req.HostConfig, req.NetworkConfig, nil, req.Name)
 	if err != nil {
 		return fmt.Errorf("docker runtime: create helper container: %w", err)
 	}
@@ -185,61 +149,55 @@ func runContainer(
 		_ = cli.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{Force: true})
 	}()
 
-	var stdinErrCh chan error
-	if stdin != nil {
-		attach, err := cli.ContainerAttach(ctx, resp.ID, container.AttachOptions{
-			Stream: true,
-			Stdin:  true,
-		})
-		if err != nil {
-			return fmt.Errorf("docker runtime: attach helper container stdin: %w", err)
-		}
-		defer attach.Close()
-
-		stdinErrCh = make(chan error, 1)
-		go func() {
-			_, err := io.Copy(attach.Conn, stdin)
-			if err == nil {
-				err = attach.CloseWrite()
-			}
-			stdinErrCh <- err
-		}()
+	stdinErrCh, releaseAttach, err := attachContainerInput(ctx, cli, resp.ID, req.Stdin)
+	if err != nil {
+		return err
 	}
+	defer releaseAttach()
 
 	if err := cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		return fmt.Errorf("docker runtime: start helper container: %w", err)
 	}
-
-	statusCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
-	select {
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("docker runtime: wait for helper container: %w", err)
-		}
-	case status := <-statusCh:
-		if status.Error != nil {
-			return fmt.Errorf("docker runtime: helper container failed: %s", status.Error.Message)
-		}
-		if status.StatusCode != 0 {
-			logs, logErr := readContainerLogs(ctx, cli, resp.ID)
-			if logErr != nil {
-				return fmt.Errorf("docker runtime: helper container exited with status %d (failed to read logs: %v)", status.StatusCode, logErr)
-			}
-			logs = strings.TrimSpace(logs)
-			if logs != "" {
-				return fmt.Errorf("docker runtime: helper container exited with status %d: %s", status.StatusCode, logs)
-			}
-			return fmt.Errorf("docker runtime: helper container exited with status %d", status.StatusCode)
-		}
+	if err := waitForContainerSuccess(ctx, cli, resp.ID); err != nil {
+		return err
 	}
-
-	if stdinErrCh != nil {
-		if err := <-stdinErrCh; err != nil {
-			return fmt.Errorf("docker runtime: stream stdin to helper container: %w", err)
-		}
+	if err := waitForHelperStdinStream(stdinErrCh); err != nil {
+		return err
 	}
-
 	return nil
+}
+
+func validateRunRequest(req RunRequest) error {
+	if req.Config == nil {
+		return fmt.Errorf("docker runtime: missing container config")
+	}
+	if req.Config.Image == "" {
+		return fmt.Errorf("docker runtime: missing container image")
+	}
+	return nil
+}
+
+func copyContainerConfig(cfg *container.Config, withStdin bool) *container.Config {
+	cfgCopy := *cfg
+	if withStdin {
+		cfgCopy.OpenStdin = true
+		cfgCopy.AttachStdin = true
+	}
+	return &cfgCopy
+}
+
+func attachContainerInput(ctx context.Context, cli *client.Client, containerID string, stdin io.Reader) (chan error, func(), error) {
+	if stdin == nil {
+		return nil, func() {}, nil
+	}
+	attach, err := cli.ContainerAttach(ctx, containerID, container.AttachOptions{
+		Stream: true,
+		Stdin:  true,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("docker runtime: attach helper container stdin: %w", err)
+	}
+	return streamInputToAttach(attach.Conn, attach.CloseWrite, stdin), attach.Close, nil
 }
 
 func readContainerLogs(ctx context.Context, cli *client.Client, containerID string) (string, error) {
@@ -259,61 +217,173 @@ func readContainerLogs(ctx context.Context, cli *client.Client, containerID stri
 	return buf.String(), nil
 }
 
+// ExecRequest describes a command execution inside a running container.
+type ExecRequest struct {
+	ContainerID string
+	Command     []string
+	Stdin       io.Reader
+}
+
 // Exec runs cmd inside an existing container through the Docker SDK.
-func Exec(ctx context.Context, cli *client.Client, containerID string, cmd []string, stdin io.Reader) error {
-	if len(cmd) == 0 {
+func Exec(ctx context.Context, cli *client.Client, req ExecRequest) error {
+	if len(req.Command) == 0 {
 		return fmt.Errorf("docker runtime: missing exec command")
 	}
+	cmdLabel := strings.Join(req.Command, " ")
 
-	execResp, err := cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
-		AttachStdin:  stdin != nil,
-		AttachStdout: true,
-		AttachStderr: true,
-		Cmd:          cmd,
-	})
+	execID, err := createExecCommand(ctx, cli, req)
 	if err != nil {
-		return fmt.Errorf("docker runtime: create exec %q: %w", strings.Join(cmd, " "), err)
+		return fmt.Errorf("docker runtime: create exec %q: %w", cmdLabel, err)
 	}
 
-	attach, err := cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	output, err := collectExecOutput(execOutputInput{
+		ctx:      ctx,
+		cli:      cli,
+		execID:   execID,
+		stdin:    req.Stdin,
+		cmdLabel: cmdLabel,
+	})
 	if err != nil {
-		return fmt.Errorf("docker runtime: attach exec %q: %w", strings.Join(cmd, " "), err)
+		return err
+	}
+
+	return inspectExecResult(execInspectInput{
+		ctx:      ctx,
+		cli:      cli,
+		execID:   execID,
+		cmdLabel: cmdLabel,
+		output:   output,
+	})
+}
+
+func createExecCommand(ctx context.Context, cli *client.Client, req ExecRequest) (string, error) {
+	execResp, err := cli.ContainerExecCreate(ctx, req.ContainerID, container.ExecOptions{
+		AttachStdin:  req.Stdin != nil,
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          req.Command,
+	})
+	if err != nil {
+		return "", err
+	}
+	return execResp.ID, nil
+}
+
+type execOutputInput struct {
+	ctx      context.Context
+	cli      *client.Client
+	execID   string
+	stdin    io.Reader
+	cmdLabel string
+}
+
+func collectExecOutput(in execOutputInput) (string, error) {
+	attach, err := in.cli.ContainerExecAttach(in.ctx, in.execID, container.ExecAttachOptions{})
+	if err != nil {
+		return "", fmt.Errorf("docker runtime: attach exec %q: %w", in.cmdLabel, err)
 	}
 	defer attach.Close()
 
-	stdinErrCh := make(chan error, 1)
-	if stdin != nil {
-		go func() {
-			_, err := io.Copy(attach.Conn, stdin)
-			if err == nil {
-				err = attach.CloseWrite()
-			}
-			stdinErrCh <- err
-		}()
+	var stdinErrCh chan error
+	if in.stdin != nil {
+		stdinErrCh = streamInputToAttach(attach.Conn, attach.CloseWrite, in.stdin)
 	}
 
 	var output bytes.Buffer
 	if _, err := stdcopy.StdCopy(&output, &output, attach.Reader); err != nil {
-		return fmt.Errorf("docker runtime: read exec output for %q: %w", strings.Join(cmd, " "), err)
+		return "", fmt.Errorf("docker runtime: read exec output for %q: %w", in.cmdLabel, err)
 	}
-
-	if stdin != nil {
-		if err := <-stdinErrCh; err != nil {
-			return fmt.Errorf("docker runtime: stream stdin to %q: %w", strings.Join(cmd, " "), err)
-		}
+	if err := waitForExecStdinStream(stdinErrCh, in.cmdLabel); err != nil {
+		return "", err
 	}
+	return output.String(), nil
+}
 
-	inspect, err := cli.ContainerExecInspect(ctx, execResp.ID)
+type execInspectInput struct {
+	ctx      context.Context
+	cli      *client.Client
+	execID   string
+	cmdLabel string
+	output   string
+}
+
+func inspectExecResult(in execInspectInput) error {
+	inspect, err := in.cli.ContainerExecInspect(in.ctx, in.execID)
 	if err != nil {
-		return fmt.Errorf("docker runtime: inspect exec %q: %w", strings.Join(cmd, " "), err)
+		return fmt.Errorf("docker runtime: inspect exec %q: %w", in.cmdLabel, err)
 	}
-	if inspect.ExitCode != 0 {
-		msg := strings.TrimSpace(output.String())
-		if msg != "" {
-			return fmt.Errorf("docker runtime: exec %q failed with exit code %d: %s", strings.Join(cmd, " "), inspect.ExitCode, msg)
-		}
-		return fmt.Errorf("docker runtime: exec %q failed with exit code %d", strings.Join(cmd, " "), inspect.ExitCode)
+	if inspect.ExitCode == 0 {
+		return nil
 	}
+	msg := strings.TrimSpace(in.output)
+	if msg != "" {
+		return fmt.Errorf("docker runtime: exec %q failed with exit code %d: %s", in.cmdLabel, inspect.ExitCode, msg)
+	}
+	return fmt.Errorf("docker runtime: exec %q failed with exit code %d", in.cmdLabel, inspect.ExitCode)
+}
 
-	return nil
+func waitForHelperStdinStream(stdinErrCh chan error) error {
+	err := readStdinStreamError(stdinErrCh)
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("docker runtime: stream stdin to helper container: %w", err)
+}
+
+func waitForExecStdinStream(stdinErrCh chan error, cmdLabel string) error {
+	err := readStdinStreamError(stdinErrCh)
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("docker runtime: stream stdin to %q: %w", cmdLabel, err)
+}
+
+func readStdinStreamError(stdinErrCh chan error) error {
+	if stdinErrCh == nil {
+		return nil
+	}
+	return <-stdinErrCh
+}
+
+func streamInputToAttach(dst io.Writer, closeWrite func() error, src io.Reader) chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(dst, src)
+		if err == nil {
+			err = closeWrite()
+		}
+		errCh <- err
+	}()
+	return errCh
+}
+
+func waitForContainerSuccess(ctx context.Context, cli *client.Client, containerID string) error {
+	statusCh, errCh := cli.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("docker runtime: wait for helper container: %w", err)
+		}
+		return nil
+	case status := <-statusCh:
+		if status.Error != nil {
+			return fmt.Errorf("docker runtime: helper container failed: %s", status.Error.Message)
+		}
+		if status.StatusCode == 0 {
+			return nil
+		}
+		return helperContainerExitError(ctx, cli, containerID, status.StatusCode)
+	}
+}
+
+func helperContainerExitError(ctx context.Context, cli *client.Client, containerID string, statusCode int64) error {
+	logs, logErr := readContainerLogs(ctx, cli, containerID)
+	if logErr != nil {
+		return fmt.Errorf("docker runtime: helper container exited with status %d (failed to read logs: %v)", statusCode, logErr)
+	}
+	logs = strings.TrimSpace(logs)
+	if logs != "" {
+		return fmt.Errorf("docker runtime: helper container exited with status %d: %s", statusCode, logs)
+	}
+	return fmt.Errorf("docker runtime: helper container exited with status %d", statusCode)
 }

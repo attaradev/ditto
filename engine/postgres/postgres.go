@@ -102,17 +102,16 @@ func (e *Engine) Dump(
 		cmd = append(cmd, "--schema-only")
 	}
 
-	if err := dockerutil.RunContainerOnNetwork(ctx, req.Docker,
-		&container.Config{
+	if err := dockerutil.RunContainer(ctx, req.Docker, dockerutil.RunRequest{
+		Config: &container.Config{
 			Image:      clientImage,
 			Entrypoint: []string{"pg_dump"},
 			Cmd:        cmd,
 			Env:        []string{"PGPASSWORD=" + password},
 		},
-		engineutil.DumpHostConfig(req.DestPath),
-		engineutil.NetworkConfig(src.NetworkName),
-		"",
-	); err != nil {
+		HostConfig:    engineutil.DumpHostConfig(req.DestPath),
+		NetworkConfig: engineutil.NetworkConfig(src.NetworkName),
+	}); err != nil {
 		return fmt.Errorf("postgres: dump helper failed: %w", err)
 	}
 	return nil
@@ -126,14 +125,17 @@ func (e *Engine) Restore(ctx context.Context, req engine.RestoreRequest) error {
 	if err := engineutil.RequireDocker("postgres", req.Docker); err != nil {
 		return err
 	}
-	if err := dockerutil.Exec(ctx, req.Docker, req.ContainerName, []string{
-		"pg_restore",
-		"--username=" + req.Copy.User,
-		"--dbname=" + req.Copy.Database,
-		"--no-owner",
-		"--no-acl",
-		"/dump/" + filepath.Base(req.DumpPath),
-	}, nil); err != nil {
+	if err := dockerutil.Exec(ctx, req.Docker, dockerutil.ExecRequest{
+		ContainerID: req.ContainerName,
+		Command: []string{
+			"pg_restore",
+			"--username=" + req.Copy.User,
+			"--dbname=" + req.Copy.Database,
+			"--no-owner",
+			"--no-acl",
+			"/dump/" + filepath.Base(req.DumpPath),
+		},
+	}); err != nil {
 		return fmt.Errorf("postgres: restore failed: %w", err)
 	}
 	return nil
@@ -160,7 +162,7 @@ func (e *Engine) DumpFromContainer(ctx context.Context, req engine.DumpFromConta
 	if req.Options.SchemaOnly {
 		cmd = append(cmd, "--schema-only")
 	}
-	if err := dockerutil.Exec(ctx, req.Docker, req.ContainerName, cmd, nil); err != nil {
+	if err := dockerutil.Exec(ctx, req.Docker, dockerutil.ExecRequest{ContainerID: req.ContainerName, Command: cmd}); err != nil {
 		return fmt.Errorf("postgres: dump from container failed: %w", err)
 	}
 	return nil

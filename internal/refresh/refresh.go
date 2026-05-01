@@ -64,85 +64,155 @@ func New(cfg *config.Config, events *store.EventStore, docker *client.Client) *S
 }
 
 func (s *Service) Refresh(ctx context.Context, name string, opts Options) (*Result, error) {
-	if s.cfg == nil {
-		return nil, fmt.Errorf("refresh: config is required")
-	}
-	target, ok := s.cfg.Targets[name]
-	if !ok {
-		return nil, fmt.Errorf("refresh: target %q is not configured", name)
-	}
-	target = withDefaultPort(target)
-
-	if err := validateRequest(name, target, s.cfg.Source, opts); err != nil {
+	target, dumpRef, err := s.prepareRefreshRequest(name, opts)
+	if err != nil {
 		return nil, err
 	}
 
-	dumpRef := opts.DumpURI
-	if dumpRef == "" {
-		dumpRef = s.cfg.Dump.Path
-	}
-	if dumpRef == "" {
-		return nil, fmt.Errorf("refresh: no dump configured; set dump.path or pass --dump")
-	}
-
-	result := &Result{
-		Target:   name,
-		Engine:   target.Engine,
-		DumpPath: dumpRef,
-		DryRun:   opts.DryRun,
-	}
+	result := newRefreshResult(name, target.Engine, dumpRef, opts.DryRun)
 	if opts.DryRun {
 		s.appendEvent(name, "dry-run", map[string]any{"dump": dumpRef, "obfuscate": opts.Obfuscate})
 		return result, nil
 	}
-
-	if s.docker == nil {
-		return nil, fmt.Errorf("refresh: docker runtime is required")
+	if err := requireDockerRuntime(s.docker); err != nil {
+		return nil, err
 	}
 
+	runtime, err := s.prepareRuntime(ctx, target, dumpRef)
+	if err != nil {
+		return s.failRefresh(name, err)
+	}
+	defer runtime.cleanup()
+	result.DumpPath = runtime.localDump
+
+	if err := s.executeRefresh(refreshExecution{
+		ctx:     ctx,
+		name:    name,
+		target:  target,
+		opts:    opts,
+		runtime: runtime,
+		dumpRef: dumpRef,
+		result:  result,
+	}); err != nil {
+		return s.failRefresh(name, err)
+	}
+	return result, nil
+}
+
+type refreshRuntime struct {
+	localDump string
+	password  string
+	dsn       string
+	cleanup   func()
+}
+
+func (s *Service) prepareRefreshRequest(name string, opts Options) (config.Target, string, error) {
+	if s.cfg == nil {
+		return config.Target{}, "", fmt.Errorf("refresh: config is required")
+	}
+	target, ok := s.cfg.Targets[name]
+	if !ok {
+		return config.Target{}, "", fmt.Errorf("refresh: target %q is not configured", name)
+	}
+	target = withDefaultPort(target)
+	if err := validateRequest(name, target, s.cfg.Source, opts); err != nil {
+		return config.Target{}, "", err
+	}
+	dumpRef := resolveDumpRef(opts.DumpURI, s.cfg.Dump.Path)
+	if dumpRef == "" {
+		return config.Target{}, "", fmt.Errorf("refresh: no dump configured; set dump.path or pass --dump")
+	}
+	return target, dumpRef, nil
+}
+
+func resolveDumpRef(requested, configured string) string {
+	if requested != "" {
+		return requested
+	}
+	return configured
+}
+
+func newRefreshResult(name, engine, dumpRef string, dryRun bool) *Result {
+	return &Result{
+		Target:   name,
+		Engine:   engine,
+		DumpPath: dumpRef,
+		DryRun:   dryRun,
+	}
+}
+
+func requireDockerRuntime(docker *client.Client) error {
+	if docker != nil {
+		return nil
+	}
+	return fmt.Errorf("refresh: docker runtime is required")
+}
+
+func (s *Service) prepareRuntime(ctx context.Context, target config.Target, dumpRef string) (refreshRuntime, error) {
 	localDump, cleanup, err := resolveDump(ctx, dumpRef)
 	if err != nil {
-		s.appendEvent(name, "failed", map[string]any{"error": err.Error()})
-		return nil, err
+		return refreshRuntime{}, err
 	}
-	defer cleanup()
-	result.DumpPath = localDump
-
 	password, err := s.secrets.Resolve(ctx, target.PasswordSecret, target.Password)
 	if err != nil {
-		s.appendEvent(name, "failed", map[string]any{"error": err.Error()})
-		return nil, fmt.Errorf("refresh: resolve target password: %w", err)
+		cleanup()
+		return refreshRuntime{}, fmt.Errorf("refresh: resolve target password: %w", err)
 	}
-	dsn := targetDSN(target, password)
+	return refreshRuntime{
+		localDump: localDump,
+		password:  password,
+		dsn:       targetDSN(target, password),
+		cleanup:   cleanup,
+	}, nil
+}
 
-	s.appendEvent(name, "started", map[string]any{"dump": dumpRef, "obfuscate": opts.Obfuscate})
-	if err := cleanTarget(ctx, target, dsn); err != nil {
-		s.appendEvent(name, "failed", map[string]any{"error": err.Error()})
-		return nil, err
+type refreshExecution struct {
+	ctx     context.Context
+	name    string
+	target  config.Target
+	opts    Options
+	runtime refreshRuntime
+	dumpRef string
+	result  *Result
+}
+
+func (s *Service) executeRefresh(in refreshExecution) error {
+	s.appendEvent(in.name, "started", map[string]any{"dump": in.dumpRef, "obfuscate": in.opts.Obfuscate})
+	if err := cleanTarget(in.ctx, in.target, in.runtime.dsn); err != nil {
+		return err
 	}
-	result.Cleaned = true
+	in.result.Cleaned = true
 
-	if err := restoreTarget(ctx, s.docker, target, password, localDump); err != nil {
-		s.appendEvent(name, "failed", map[string]any{"error": err.Error()})
-		return nil, err
+	if err := restoreTarget(restoreRequest{
+		ctx:      in.ctx,
+		docker:   s.docker,
+		target:   in.target,
+		password: in.runtime.password,
+		dumpPath: in.runtime.localDump,
+	}); err != nil {
+		return err
 	}
-	result.Restored = true
+	in.result.Restored = true
 
-	if opts.Obfuscate && len(s.cfg.Obfuscation.Rules) > 0 {
-		if err := obfuscation.New(target.Engine, dsn, s.cfg.Obfuscation.Rules).Apply(ctx); err != nil {
-			s.appendEvent(name, "failed", map[string]any{"error": err.Error()})
-			return nil, fmt.Errorf("refresh: obfuscate target: %w", err)
+	if in.opts.Obfuscate && len(s.cfg.Obfuscation.Rules) > 0 {
+		if err := obfuscation.New(in.target.Engine, in.runtime.dsn, s.cfg.Obfuscation.Rules).Apply(in.ctx); err != nil {
+			return fmt.Errorf("refresh: obfuscate target: %w", err)
 		}
-		result.Obfuscated = true
+		in.result.Obfuscated = true
 	}
 
-	s.appendEvent(name, "completed", map[string]any{
-		"dump":       dumpRef,
-		"cleaned":    result.Cleaned,
-		"restored":   result.Restored,
-		"obfuscated": result.Obfuscated,
+	s.appendEvent(in.name, "completed", map[string]any{
+		"dump":       in.dumpRef,
+		"cleaned":    in.result.Cleaned,
+		"restored":   in.result.Restored,
+		"obfuscated": in.result.Obfuscated,
 	})
-	return result, nil
+	return nil
+}
+
+func (s *Service) failRefresh(name string, err error) (*Result, error) {
+	s.appendEvent(name, "failed", map[string]any{"error": err.Error()})
+	return nil, err
 }
 
 func validateRequest(name string, target config.Target, source config.Source, opts Options) error {
@@ -164,34 +234,68 @@ func validateRequest(name string, target config.Target, source config.Source, op
 }
 
 func sameDatabase(source config.Source, target config.Target) bool {
-	if source.Engine == "" || source.Host == "" || source.Database == "" || target.Engine == "" || target.Host == "" || target.Database == "" {
+	return sameDatabaseIdentity(sourceIdentity(source), targetIdentity(target))
+}
+
+type dbIdentity struct {
+	engine   string
+	host     string
+	port     int
+	database string
+}
+
+func sourceIdentity(source config.Source) dbIdentity {
+	return dbIdentity{
+		engine:   source.Engine,
+		host:     source.Host,
+		port:     sourcePort(source),
+		database: source.Database,
+	}
+}
+
+func targetIdentity(target config.Target) dbIdentity {
+	return dbIdentity{
+		engine:   target.Engine,
+		host:     target.Host,
+		port:     targetPort(target),
+		database: target.Database,
+	}
+}
+
+func (d dbIdentity) isComplete() bool {
+	return d.engine != "" && d.host != "" && d.database != ""
+}
+
+func (d dbIdentity) sameAs(other dbIdentity) bool {
+	return strings.EqualFold(d.engine, other.engine) &&
+		strings.EqualFold(d.host, other.host) &&
+		d.port == other.port &&
+		strings.EqualFold(d.database, other.database)
+}
+
+func sameDatabaseIdentity(source dbIdentity, target dbIdentity) bool {
+	if !source.isComplete() || !target.isComplete() {
 		return false
 	}
-	return strings.EqualFold(source.Engine, target.Engine) &&
-		strings.EqualFold(source.Host, target.Host) &&
-		sourcePort(source) == targetPort(target) &&
-		strings.EqualFold(source.Database, target.Database)
+	return source.sameAs(target)
 }
 
 func sourcePort(source config.Source) int {
 	if source.Port != 0 {
 		return source.Port
 	}
-	switch source.Engine {
-	case "postgres":
-		return 5432
-	case "mysql":
-		return 3306
-	default:
-		return 0
-	}
+	return defaultPortForEngine(source.Engine)
 }
 
 func targetPort(target config.Target) int {
 	if target.Port != 0 {
 		return target.Port
 	}
-	switch target.Engine {
+	return defaultPortForEngine(target.Engine)
+}
+
+func defaultPortForEngine(engine string) int {
+	switch engine {
 	case "postgres":
 		return 5432
 	case "mysql":
@@ -292,16 +396,65 @@ END $$;`)
 }
 
 func cleanMySQL(ctx context.Context, dsn string) error {
-	db, err := sql.Open("mysql", dsn)
+	return withMySQLTarget(ctx, dsn, cleanMySQLDatabase)
+}
+
+func withMySQLTarget(ctx context.Context, dsn string, fn func(context.Context, *sql.DB) error) error {
+	db, err := openMySQLTarget(dsn)
 	if err != nil {
-		return fmt.Errorf("refresh: open mysql target: %w", err)
+		return err
 	}
 	defer func() { _ = db.Close() }()
+	return fn(ctx, db)
+}
 
-	if _, err := db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
-		return fmt.Errorf("refresh: disable mysql foreign key checks: %w", err)
+func cleanMySQLDatabase(ctx context.Context, db *sql.DB) error {
+	restoreFKChecks, err := disableMySQLForeignKeyChecks(ctx, db)
+	if err != nil {
+		return err
 	}
-	defer func() { _, _ = db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS=1") }()
+	defer restoreFKChecks()
+
+	if err := dropMySQLTablesAndViews(ctx, db); err != nil {
+		return err
+	}
+	return dropMySQLProgrammableObjects(ctx, db)
+}
+
+func openMySQLTarget(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("refresh: open mysql target: %w", err)
+	}
+	return db, nil
+}
+
+func disableMySQLForeignKeyChecks(ctx context.Context, db *sql.DB) (func(), error) {
+	if _, err := db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS=0"); err != nil {
+		return nil, fmt.Errorf("refresh: disable mysql foreign key checks: %w", err)
+	}
+	return func() { _, _ = db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS=1") }, nil
+}
+
+type mysqlTable struct {
+	name      string
+	tableType string
+}
+
+func dropMySQLTablesAndViews(ctx context.Context, db *sql.DB) error {
+	tables, err := listMySQLTablesAndViews(ctx, db)
+	if err != nil {
+		return err
+	}
+	for _, tbl := range tables {
+		if err := dropMySQLTableOrView(ctx, db, tbl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func listMySQLTablesAndViews(ctx context.Context, db *sql.DB) ([]mysqlTable, error) {
 
 	rows, err := db.QueryContext(ctx, `
 SELECT table_name, table_type
@@ -309,83 +462,107 @@ FROM information_schema.tables
 WHERE table_schema = DATABASE()
 ORDER BY CASE WHEN table_type = 'VIEW' THEN 0 ELSE 1 END`)
 	if err != nil {
-		return fmt.Errorf("refresh: list mysql tables: %w", err)
+		return nil, fmt.Errorf("refresh: list mysql tables: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	type table struct {
-		name      string
-		tableType string
-	}
-	var tables []table
+	var tables []mysqlTable
 	for rows.Next() {
-		var tbl table
+		var tbl mysqlTable
 		if err := rows.Scan(&tbl.name, &tbl.tableType); err != nil {
-			return fmt.Errorf("refresh: scan mysql table: %w", err)
+			return nil, fmt.Errorf("refresh: scan mysql table: %w", err)
 		}
 		tables = append(tables, tbl)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("refresh: iterate mysql tables: %w", err)
+		return nil, fmt.Errorf("refresh: iterate mysql tables: %w", err)
 	}
-	for _, tbl := range tables {
-		kind := "TABLE"
-		if tbl.tableType == "VIEW" {
-			kind = "VIEW"
-		}
-		if _, err := db.ExecContext(ctx, "DROP "+kind+" IF EXISTS "+quoteMySQLIdent(tbl.name)); err != nil {
-			return fmt.Errorf("refresh: drop mysql %s %s: %w", strings.ToLower(kind), tbl.name, err)
-		}
-	}
+	return tables, nil
+}
 
-	if err := dropMySQLRoutines(ctx, db); err != nil {
-		return err
+func dropMySQLTableOrView(ctx context.Context, db *sql.DB, tbl mysqlTable) error {
+	kind := "TABLE"
+	if tbl.tableType == "VIEW" {
+		kind = "VIEW"
 	}
-	if err := dropMySQLEvents(ctx, db); err != nil {
-		return err
+	if _, err := db.ExecContext(ctx, "DROP "+kind+" IF EXISTS "+quoteMySQLIdent(tbl.name)); err != nil {
+		return fmt.Errorf("refresh: drop mysql %s %s: %w", strings.ToLower(kind), tbl.name, err)
 	}
 	return nil
 }
 
+func dropMySQLProgrammableObjects(ctx context.Context, db *sql.DB) error {
+	if err := dropMySQLRoutines(ctx, db); err != nil {
+		return err
+	}
+	return dropMySQLEvents(ctx, db)
+}
+
 func dropMySQLRoutines(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `
+	return dropMySQLObjects(ctx, db, mysqlDropSpec{
+		query: `
 SELECT routine_name, routine_type
 FROM information_schema.routines
-WHERE routine_schema = DATABASE()`)
-	if err != nil {
-		return fmt.Errorf("refresh: list mysql routines: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var name, routineType string
-		if err := rows.Scan(&name, &routineType); err != nil {
-			return fmt.Errorf("refresh: scan mysql routine: %w", err)
-		}
-		if _, err := db.ExecContext(ctx, "DROP "+routineType+" IF EXISTS "+quoteMySQLIdent(name)); err != nil {
-			return fmt.Errorf("refresh: drop mysql routine %s: %w", name, err)
-		}
-	}
-	return rows.Err()
+WHERE routine_schema = DATABASE()`,
+		listErr: "refresh: list mysql routines",
+		scanErr: "refresh: scan mysql routine",
+		dropErr: "refresh: drop mysql routine %s",
+		scan: func(rows *sql.Rows) (mysqlDropObject, error) {
+			var name, routineType string
+			if err := rows.Scan(&name, &routineType); err != nil {
+				return mysqlDropObject{}, err
+			}
+			return mysqlDropObject{name: name, stmt: "DROP " + routineType + " IF EXISTS " + quoteMySQLIdent(name)}, nil
+		},
+	})
 }
 
 func dropMySQLEvents(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `
+	return dropMySQLObjects(ctx, db, mysqlDropSpec{
+		query: `
 SELECT event_name
 FROM information_schema.events
-WHERE event_schema = DATABASE()`)
+WHERE event_schema = DATABASE()`,
+		listErr: "refresh: list mysql events",
+		scanErr: "refresh: scan mysql event",
+		dropErr: "refresh: drop mysql event %s",
+		scan: func(rows *sql.Rows) (mysqlDropObject, error) {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				return mysqlDropObject{}, err
+			}
+			return mysqlDropObject{name: name, stmt: "DROP EVENT IF EXISTS " + quoteMySQLIdent(name)}, nil
+		},
+	})
+}
+
+type mysqlDropObject struct {
+	name string
+	stmt string
+}
+
+type mysqlDropSpec struct {
+	query   string
+	listErr string
+	scanErr string
+	dropErr string
+	scan    func(rows *sql.Rows) (mysqlDropObject, error)
+}
+
+func dropMySQLObjects(ctx context.Context, db *sql.DB, spec mysqlDropSpec) error {
+	rows, err := db.QueryContext(ctx, spec.query)
 	if err != nil {
-		return fmt.Errorf("refresh: list mysql events: %w", err)
+		return fmt.Errorf("%s: %w", spec.listErr, err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("refresh: scan mysql event: %w", err)
+		obj, err := spec.scan(rows)
+		if err != nil {
+			return fmt.Errorf("%s: %w", spec.scanErr, err)
 		}
-		if _, err := db.ExecContext(ctx, "DROP EVENT IF EXISTS "+quoteMySQLIdent(name)); err != nil {
-			return fmt.Errorf("refresh: drop mysql event %s: %w", name, err)
+		if _, err := db.ExecContext(ctx, obj.stmt); err != nil {
+			return fmt.Errorf(spec.dropErr+": %w", obj.name, err)
 		}
 	}
 	return rows.Err()
@@ -395,52 +572,68 @@ func quoteMySQLIdent(s string) string {
 	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }
 
-func restoreTarget(ctx context.Context, docker *client.Client, target config.Target, password, dumpPath string) error {
-	eng, err := engine.Get(target.Engine)
+type restoreRequest struct {
+	ctx      context.Context
+	docker   *client.Client
+	target   config.Target
+	password string
+	dumpPath string
+}
+
+func restoreTarget(in restoreRequest) error {
+	eng, err := engine.Get(in.target.Engine)
 	if err != nil {
 		return fmt.Errorf("refresh: %w", err)
 	}
-	switch target.Engine {
+	withImage := restoreWithImageRequest{
+		restoreRequest: in,
+		image:          eng.ContainerImage(),
+	}
+	switch in.target.Engine {
 	case "mysql":
-		return restoreMySQL(ctx, docker, eng.ContainerImage(), target, password, dumpPath)
+		return restoreMySQL(withImage)
 	default:
-		return restorePostgres(ctx, docker, eng.ContainerImage(), target, password, dumpPath)
+		return restorePostgres(withImage)
 	}
 }
 
-func restorePostgres(ctx context.Context, docker *client.Client, image string, target config.Target, password, dumpPath string) error {
-	if err := dockerutil.RunContainer(ctx, docker,
-		&container.Config{
-			Image:      image,
+type restoreWithImageRequest struct {
+	restoreRequest
+	image string
+}
+
+func restorePostgres(in restoreWithImageRequest) error {
+	if err := dockerutil.RunContainer(in.ctx, in.docker, dockerutil.RunRequest{
+		Config: &container.Config{
+			Image:      in.image,
 			Entrypoint: []string{"pg_restore"},
 			Cmd: []string{
 				"--no-owner",
 				"--no-acl",
-				"--host=" + target.Host,
-				"--port=" + fmt.Sprint(target.Port),
-				"--username=" + target.User,
-				"--dbname=" + target.Database,
-				"/dump/" + filepath.Base(dumpPath),
+				"--host=" + in.target.Host,
+				"--port=" + fmt.Sprint(in.target.Port),
+				"--username=" + in.target.User,
+				"--dbname=" + in.target.Database,
+				"/dump/" + filepath.Base(in.dumpPath),
 			},
-			Env: []string{"PGPASSWORD=" + password},
+			Env: []string{"PGPASSWORD=" + in.password},
 		},
-		&container.HostConfig{
+		HostConfig: &container.HostConfig{
 			Mounts: []mount.Mount{{
 				Type:     mount.TypeBind,
-				Source:   filepath.Dir(dumpPath),
+				Source:   filepath.Dir(in.dumpPath),
 				Target:   "/dump",
 				ReadOnly: true,
 			}},
 		},
-		"",
-	); err != nil {
+	}); err != nil {
 		return fmt.Errorf("refresh: restore postgres target: %w", err)
 	}
 	return nil
 }
 
-func restoreMySQL(ctx context.Context, docker *client.Client, image string, target config.Target, password, dumpPath string) error {
-	f, err := os.Open(dumpPath)
+func restoreMySQL(in restoreWithImageRequest) error {
+	f, err := os.Open(in.dumpPath)
 	if err != nil {
 		return fmt.Errorf("refresh: open mysql dump: %w", err)
 	}
@@ -452,22 +645,21 @@ func restoreMySQL(ctx context.Context, docker *client.Client, image string, targ
 	}
 	defer func() { _ = gz.Close() }()
 
-	if err := dockerutil.RunContainerWithInput(ctx, docker,
-		&container.Config{
-			Image:      image,
+	if err := dockerutil.RunContainer(in.ctx, in.docker, dockerutil.RunRequest{
+		Config: &container.Config{
+			Image:      in.image,
 			Entrypoint: []string{"mysql"},
 			Cmd: []string{
-				"--host=" + target.Host,
-				"--port=" + fmt.Sprint(target.Port),
-				"--user=" + target.User,
-				"--database=" + target.Database,
+				"--host=" + in.target.Host,
+				"--port=" + fmt.Sprint(in.target.Port),
+				"--user=" + in.target.User,
+				"--database=" + in.target.Database,
 			},
-			Env: []string{"MYSQL_PWD=" + password},
+			Env: []string{"MYSQL_PWD=" + in.password},
 		},
-		&container.HostConfig{},
-		"",
-		gz,
-	); err != nil {
+		HostConfig: &container.HostConfig{},
+		Stdin:      gz,
+	}); err != nil {
 		return fmt.Errorf("refresh: restore mysql target: %w", err)
 	}
 	return nil

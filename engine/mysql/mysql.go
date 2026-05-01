@@ -99,17 +99,16 @@ func (e *Engine) Dump(
 		cmd = append(cmd, "--no-data")
 	}
 
-	if err := dockerutil.RunContainerOnNetwork(ctx, req.Docker,
-		&container.Config{
+	if err := dockerutil.RunContainer(ctx, req.Docker, dockerutil.RunRequest{
+		Config: &container.Config{
 			Image:      clientImage,
 			Entrypoint: []string{"mysqldump"},
 			Cmd:        cmd,
 			Env:        []string{"MYSQL_PWD=" + password},
 		},
-		engineutil.DumpHostConfig(req.DestPath),
-		engineutil.NetworkConfig(src.NetworkName),
-		"",
-	); err != nil {
+		HostConfig:    engineutil.DumpHostConfig(req.DestPath),
+		NetworkConfig: engineutil.NetworkConfig(src.NetworkName),
+	}); err != nil {
 		_ = os.Remove(sqlDumpPath)
 		return fmt.Errorf("mysql: dump helper failed: %w", err)
 	}
@@ -148,9 +147,13 @@ func (e *Engine) Restore(ctx context.Context, req engine.RestoreRequest) error {
 		_ = gz.Close()
 	}()
 
-	if err := dockerutil.Exec(ctx, req.Docker, req.ContainerName, []string{
-		"mysql", "-u", req.Copy.User, "-p" + req.Copy.Password, req.Copy.Database,
-	}, gz); err != nil {
+	if err := dockerutil.Exec(ctx, req.Docker, dockerutil.ExecRequest{
+		ContainerID: req.ContainerName,
+		Command: []string{
+			"mysql", "-u", req.Copy.User, "-p" + req.Copy.Password, req.Copy.Database,
+		},
+		Stdin: gz,
+	}); err != nil {
 		return fmt.Errorf("mysql: restore failed: %w", err)
 	}
 	return nil
@@ -174,7 +177,7 @@ func (e *Engine) DumpFromContainer(ctx context.Context, req engine.DumpFromConta
 	if req.Options.SchemaOnly {
 		cmd = append(cmd, "--no-data")
 	}
-	if err := dockerutil.Exec(ctx, req.Docker, req.ContainerName, cmd, nil); err != nil {
+	if err := dockerutil.Exec(ctx, req.Docker, dockerutil.ExecRequest{ContainerID: req.ContainerName, Command: cmd}); err != nil {
 		return fmt.Errorf("mysql: dump from container failed: %w", err)
 	}
 

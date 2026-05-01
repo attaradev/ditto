@@ -129,26 +129,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := copypkg.CreateOptions{
-		TTLSeconds:   ttlSeconds,
-		RunID:        req.RunID,
-		JobName:      req.JobName,
-		OwnerSubject: principal.Subject,
-		Obfuscate:    req.Obfuscate,
+	opts, cleanup, err := buildCreateOptions(r.Context(), req, principal.Subject, ttlSeconds)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	if req.DumpURI != "" {
-		if !isValidRemoteDumpURI(req.DumpURI) {
-			writeError(w, http.StatusBadRequest, "dump_uri must be an s3:// or https:// URI")
-			return
-		}
-		localPath, cleanup, err := dumpfetch.Fetch(r.Context(), req.DumpURI)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "resolve dump_uri: "+err.Error())
-			return
-		}
-		defer cleanup()
-		opts.DumpPath = localPath
-	}
+	defer cleanup()
 
 	copyRecord, err := s.controller.Create(r.Context(), opts)
 	if err != nil {
@@ -188,12 +174,8 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	copyRecord, principal, ok := s.authorizedCopy(w, r)
+	copyRecord, _, ok := s.authorizedCopy(w, r)
 	if !ok {
-		return
-	}
-	if !principal.IsAdmin && copyRecord.OwnerSubject != principal.Subject {
-		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if err := s.controller.Destroy(r.Context(), copyRecord.ID); err != nil {
@@ -248,8 +230,8 @@ func (s *Server) handleTargetRefresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	if req.DumpURI != "" && !isValidRemoteDumpURI(req.DumpURI) {
-		writeError(w, http.StatusBadRequest, "dump_uri must be an s3:// or https:// URI")
+	if err := validateRemoteDumpURI(req.DumpURI); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -447,6 +429,40 @@ func resolveTTL(v *int) (int, error) {
 		return 0, fmt.Errorf("ttl_seconds must be greater than zero")
 	}
 	return *v, nil
+}
+
+func buildCreateOptions(ctx context.Context, req apiv2.CreateCopyRequest, ownerSubject string, ttlSeconds int) (copypkg.CreateOptions, func(), error) {
+	opts := copypkg.CreateOptions{
+		TTLSeconds:   ttlSeconds,
+		RunID:        req.RunID,
+		JobName:      req.JobName,
+		OwnerSubject: ownerSubject,
+		Obfuscate:    req.Obfuscate,
+	}
+	cleanup := func() {}
+	if req.DumpURI == "" {
+		return opts, cleanup, nil
+	}
+	if err := validateRemoteDumpURI(req.DumpURI); err != nil {
+		return opts, cleanup, err
+	}
+	localPath, cl, err := dumpfetch.Fetch(ctx, req.DumpURI)
+	if err != nil {
+		return opts, cleanup, fmt.Errorf("resolve dump_uri: %w", err)
+	}
+	cleanup = cl
+	opts.DumpPath = localPath
+	return opts, cleanup, nil
+}
+
+func validateRemoteDumpURI(uri string) error {
+	if uri == "" {
+		return nil
+	}
+	if isValidRemoteDumpURI(uri) {
+		return nil
+	}
+	return fmt.Errorf("dump_uri must be an s3:// or https:// URI")
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {
