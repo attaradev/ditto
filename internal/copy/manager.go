@@ -149,25 +149,46 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 		return nil // already gone
 	}
 
+	if err := m.markDestroying(id); err != nil {
+		return err
+	}
+
+	if err := m.stopAndRemoveContainer(ctx, id); err != nil {
+		return err
+	}
+
+	m.ports.Release(c.Port)
+	if err := m.markDestroyed(id); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) markDestroying(id string) error {
 	if err := m.copies.UpdateStatus(id, store.StatusDestroying); err != nil {
 		return err
 	}
 	_ = m.events.Append("copy", id, "destroying", actor, nil)
+	return nil
+}
 
+func (m *Manager) stopAndRemoveContainer(ctx context.Context, id string) error {
 	stopErr := m.docker.ContainerStop(ctx, containerName(id), container.StopOptions{Timeout: intPtr(10)})
 	rmErr := m.docker.ContainerRemove(ctx, containerName(id), container.RemoveOptions{Force: true})
 
 	if stopErr != nil && !cerrdefs.IsNotFound(stopErr) {
 		slog.Warn("copy: container stop failed", "id", id, "err", stopErr)
 	}
-	if rmErr != nil && !cerrdefs.IsNotFound(rmErr) {
-		slog.Warn("copy: container remove failed", "id", id, "err", rmErr)
-		_ = m.copies.UpdateStatus(id, store.StatusFailed, store.WithErrorMessage(rmErr.Error()))
-		return fmt.Errorf("copy.Destroy remove %s: %w", id, rmErr)
+	if rmErr == nil || cerrdefs.IsNotFound(rmErr) {
+		return nil
 	}
 
-	m.ports.Release(c.Port)
+	slog.Warn("copy: container remove failed", "id", id, "err", rmErr)
+	_ = m.copies.UpdateStatus(id, store.StatusFailed, store.WithErrorMessage(rmErr.Error()))
+	return fmt.Errorf("copy.Destroy remove %s: %w", id, rmErr)
+}
 
+func (m *Manager) markDestroyed(id string) error {
 	now := time.Now()
 	if err := m.copies.UpdateStatus(id, store.StatusDestroyed, store.WithDestroyedAt(now)); err != nil {
 		return err
@@ -253,9 +274,29 @@ func (m *Manager) provision(ctx context.Context, req provisionRequest) (*store.C
 		return nil, err
 	}
 
+	state, err := m.prepareProvisionState(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := m.runProvisionSteps(ctx, req, dumpPath, &state); err != nil {
+		state.cleanup.run(err)
+		return nil, err
+	}
+	return state.copy, nil
+}
+
+type provisionState struct {
+	copy        *store.Copy
+	id          string
+	copyRuntime CopyRuntime
+	cleanup     provisionCleanup
+}
+
+func (m *Manager) prepareProvisionState(ctx context.Context, req provisionRequest) (provisionState, error) {
 	port, err := m.ports.AllocateWithTimeout(ctx, 60*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("copy.Create: %w", err)
+		return provisionState{}, fmt.Errorf("copy.Create: %w", err)
 	}
 
 	id := ulid.Make().String()
@@ -264,56 +305,51 @@ func (m *Manager) provision(ctx context.Context, req provisionRequest) (*store.C
 	copyRuntime, err := m.copyRuntime(id, port)
 	if err != nil {
 		m.ports.Release(port)
-		return nil, err
+		return provisionState{}, err
 	}
-
 	if err := m.copies.Create(c); err != nil {
 		m.ports.Release(port)
-		return nil, fmt.Errorf("copy.Create record: %w", err)
+		return provisionState{}, fmt.Errorf("copy.Create record: %w", err)
 	}
 	_ = m.events.Append("copy", id, "created", actor, map[string]any{"port": port, "warm": req.warm})
 
-	cleanup := provisionCleanup{manager: m, id: id, port: port}
-	containerID, err := m.startContainer(ctx, startContainerRequest{
+	return provisionState{
+		copy:        c,
 		id:          id,
-		dumpPath:    dumpPath,
 		copyRuntime: copyRuntime,
+		cleanup:     provisionCleanup{manager: m, id: id, port: port},
+	}, nil
+}
+
+func (m *Manager) runProvisionSteps(ctx context.Context, req provisionRequest, dumpPath string, state *provisionState) error {
+	containerID, err := m.startContainer(ctx, startContainerRequest{
+		id:          state.id,
+		dumpPath:    dumpPath,
+		copyRuntime: state.copyRuntime,
 	})
 	if err != nil {
-		cleanup.run(err)
-		return nil, fmt.Errorf("copy.Create start container: %w", err)
+		return fmt.Errorf("copy.Create start container: %w", err)
 	}
-	cleanup.containerStarted = true
+	state.cleanup.containerStarted = true
 
-	if err := m.markCreating(id, containerID); err != nil {
-		cleanup.run(err)
-		return nil, err
+	if err := m.markCreating(state.id, containerID); err != nil {
+		return err
 	}
-
-	if err := m.eng.WaitReady(copyRuntime.Internal, 2*time.Minute); err != nil {
-		cleanup.run(err)
-		return nil, fmt.Errorf("copy.Create wait ready: %w", err)
+	if err := m.eng.WaitReady(state.copyRuntime.Internal, 2*time.Minute); err != nil {
+		return fmt.Errorf("copy.Create wait ready: %w", err)
 	}
-
-	if err := m.restoreDump(ctx, id, dumpPath, copyRuntime); err != nil {
-		cleanup.run(err)
-		return nil, fmt.Errorf("copy.Create restore: %w", err)
+	if err := m.restoreDump(ctx, state.id, dumpPath, state.copyRuntime); err != nil {
+		return fmt.Errorf("copy.Create restore: %w", err)
+	}
+	if err := m.applyPostRestoreObfuscation(ctx, req.opts, state.copyRuntime); err != nil {
+		return fmt.Errorf("copy.Create obfuscate: %w", err)
 	}
 
-	if err := m.applyPostRestoreObfuscation(ctx, req.opts, copyRuntime); err != nil {
-		cleanup.run(err)
-		return nil, fmt.Errorf("copy.Create obfuscate: %w", err)
-	}
-
-	if err := m.markReady(c, readyCopy{
+	return m.markReady(state.copy, readyCopy{
 		containerID: containerID,
-		copyRuntime: copyRuntime,
+		copyRuntime: state.copyRuntime,
 		warm:        req.warm,
-	}); err != nil {
-		cleanup.run(err)
-		return nil, err
-	}
-	return c, nil
+	})
 }
 
 func (m *Manager) resolveDumpPath(opts CreateOptions) string {
