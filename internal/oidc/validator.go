@@ -113,9 +113,9 @@ type jwtToken struct {
 // never need to perform string-key lookups or type assertions inline.
 type jwtClaims map[string]any
 
-func (c jwtClaims) issuer() string     { s, _ := c["iss"].(string); return s }
-func (c jwtClaims) subject() string    { s, _ := c["sub"].(string); return s }
-func (c jwtClaims) audience() any      { return c["aud"] }
+func (c jwtClaims) issuer() string  { s, _ := c["iss"].(string); return s }
+func (c jwtClaims) subject() string { s, _ := c["sub"].(string); return s }
+func (c jwtClaims) audience() any   { return c["aud"] }
 func (c jwtClaims) isAdmin(rule AdminRule) bool {
 	return matchesClaim(c[rule.Key], rule.Value)
 }
