@@ -5,6 +5,18 @@ All notable changes to ditto are documented in this file.
 This changelog starts with the current unreleased product snapshot. Earlier history is available in
 `git log`.
 
+## 0.3.2 — 2026-05-01
+
+### Changed
+
+- Refactor core Docker execution helpers to use structured request types, and migrate MySQL/Postgres
+  engine call sites to the new APIs
+- Reduce method complexity in `copy.Manager` by decomposing `Destroy` and `provision` into smaller,
+  focused helpers while preserving lifecycle semantics
+- Simplify config and copy command flows with shared helper extraction and cleaner control paths
+- Replace positional argument patterns with request structs and decompose large functions for
+  maintainability
+
 ## 0.3.1 — 2026-04-30
 
 ### Fixed
