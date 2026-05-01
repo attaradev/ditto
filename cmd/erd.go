@@ -47,7 +47,7 @@ Examples:
   ditto erd --source                    # Connect to source DB directly (no copy)
   ditto erd --server http://ditto:8080  # Use a shared ditto host for the copy`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runERD(cmd, format, output, useSource)
+			return runERD(cmd, erdOptions{format: format, output: output}, useSource)
 		},
 	}
 
@@ -66,7 +66,12 @@ Examples:
 	return cmd
 }
 
-func runERD(cmd *cobra.Command, format, output string, useSource bool) error {
+type erdOptions struct {
+	format string
+	output string
+}
+
+func runERD(cmd *cobra.Command, opts erdOptions, useSource bool) error {
 	cfg := configFromContext(cmd)
 
 	dsn, cleanup, err := resolveERDDSN(cmd, cfg, useSource)
@@ -85,13 +90,13 @@ func runERD(cmd *cobra.Command, format, output string, useSource bool) error {
 		return err
 	}
 
-	w, closeOutput, err := openERDOutput(output)
+	w, closeOutput, err := openERDOutput(opts.output)
 	if err != nil {
 		return err
 	}
 	defer closeOutput()
 
-	return renderERD(format, schema, w)
+	return renderERD(opts.format, schema, w)
 }
 
 // resolveERDDSN returns the DSN to introspect and a cleanup function that must
