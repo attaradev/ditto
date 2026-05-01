@@ -5,6 +5,17 @@ All notable changes to ditto are documented in this file.
 This changelog starts with the current unreleased product snapshot. Earlier history is available in
 `git log`.
 
+## 0.3.3 — 2026-05-01
+
+### Fixed
+
+- Resolve Go Report Card cyclomatic-complexity warnings in ERD and integration test helpers
+- Check test container connection close errors and remove an unused OIDC JWT claim helper
+
+### Changed
+
+- Decompose ERD, obfuscation, integration DB, and OIDC helper flows into smaller focused functions
+
 ## 0.3.2 — 2026-05-01
 
 ### Changed
