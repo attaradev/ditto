@@ -10,6 +10,7 @@ import (
 
 	"github.com/attaradev/ditto/engine"
 	copypkg "github.com/attaradev/ditto/internal/copy"
+	"github.com/attaradev/ditto/internal/config"
 	"github.com/attaradev/ditto/internal/erd"
 	"github.com/attaradev/ditto/internal/secret"
 	mysqldriver "github.com/go-sql-driver/mysql"
@@ -67,34 +68,9 @@ Examples:
 func runERD(cmd *cobra.Command, format, output string, useSource bool) error {
 	cfg := configFromContext(cmd)
 
-	var (
-		dsn     string
-		copyID  string
-		cleanup func()
-	)
-
-	if useSource {
-		var sc secret.Cache
-		pwd, err := sc.Resolve(cmd.Context(), cfg.Source.PasswordSecret, cfg.Source.Password)
-		if err != nil {
-			return fmt.Errorf("erd: resolve source password: %w", err)
-		}
-		dsn = buildERDSourceDSN(cfg.Source.Engine, cfg.Source.Host, cfg.Source.Port, cfg.Source.Database, cfg.Source.User, pwd)
-		cleanup = func() {}
-	} else {
-		client := copyClientFromContext(cmd)
-		c, err := client.Create(cmd.Context(), copypkg.CreateOptions{RunID: "erd"})
-		if err != nil {
-			return fmt.Errorf("erd: create copy: %w", err)
-		}
-		dsn = c.ConnectionString
-		copyID = c.ID
-		cleanup = func() {
-			if err := client.Destroy(cmd.Context(), copyID); err != nil {
-				// Non-fatal: copy will expire via TTL.
-				_ = err
-			}
-		}
+	dsn, cleanup, err := resolveERDDSN(cmd, cfg, useSource)
+	if err != nil {
+		return err
 	}
 	defer cleanup()
 
@@ -149,6 +125,32 @@ func runERD(cmd *cobra.Command, format, output string, useSource bool) error {
 	default:
 		return fmt.Errorf("erd: unknown format %q — use mermaid or dbml", format)
 	}
+}
+
+// resolveERDDSN returns the DSN to introspect and a cleanup function that must
+// be deferred by the caller. When useSource is false a temporary copy is
+// created; cleanup destroys it (non-fatal on error — the copy expires via TTL).
+func resolveERDDSN(cmd *cobra.Command, cfg *config.Config, useSource bool) (dsn string, cleanup func(), err error) {
+	if useSource {
+		var sc secret.Cache
+		pwd, err := sc.Resolve(cmd.Context(), cfg.Source.PasswordSecret, cfg.Source.Password)
+		if err != nil {
+			return "", nil, fmt.Errorf("erd: resolve source password: %w", err)
+		}
+		dsn = buildERDSourceDSN(cfg.Source.Engine, cfg.Source.Host, cfg.Source.Port, cfg.Source.Database, cfg.Source.User, pwd)
+		return dsn, func() {}, nil
+	}
+
+	client := copyClientFromContext(cmd)
+	c, err := client.Create(cmd.Context(), copypkg.CreateOptions{RunID: "erd"})
+	if err != nil {
+		return "", nil, fmt.Errorf("erd: create copy: %w", err)
+	}
+	return c.ConnectionString, func() {
+		if err := client.Destroy(cmd.Context(), c.ID); err != nil {
+			_ = err
+		}
+	}, nil
 }
 
 // buildERDSourceDSN builds a DSN for direct connection to the source database.
