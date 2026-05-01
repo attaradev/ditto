@@ -338,7 +338,7 @@ func localIPv4ViaDial() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	addr, ok := conn.LocalAddr().(*net.UDPAddr)
 	if !ok || !isNonLoopbackIPv4(addr.IP) {
