@@ -74,20 +74,9 @@ func runERD(cmd *cobra.Command, format, output string, useSource bool) error {
 	}
 	defer cleanup()
 
-	engineName := cfg.Source.Engine
-	databaseName := cfg.Source.Database
-	if !useSource {
-		if inferredEngine, inferredDatabase, ok := inferERDTargetFromDSN(dsn); ok {
-			if engineName == "" {
-				engineName = inferredEngine
-			}
-			if databaseName == "" {
-				databaseName = inferredDatabase
-			}
-		}
-	}
-	if engineName == "" {
-		return fmt.Errorf("erd: database engine is unknown; configure source.engine or use a copy DSN with a recognizable format")
+	engineName, databaseName, err := resolveERDTargetNames(cfg, useSource, dsn)
+	if err != nil {
+		return err
 	}
 
 	driver := erdDriverName(engineName)
@@ -137,7 +126,7 @@ func resolveERDDSN(cmd *cobra.Command, cfg *config.Config, useSource bool) (dsn 
 		if err != nil {
 			return "", nil, fmt.Errorf("erd: resolve source password: %w", err)
 		}
-		dsn = buildERDSourceDSN(cfg.Source.Engine, cfg.Source.Host, cfg.Source.Port, cfg.Source.Database, cfg.Source.User, pwd)
+		dsn = buildERDSourceDSN(cfg.Source, pwd)
 		return dsn, func() {}, nil
 	}
 
@@ -153,15 +142,37 @@ func resolveERDDSN(cmd *cobra.Command, cfg *config.Config, useSource bool) (dsn 
 	}, nil
 }
 
+// resolveERDTargetNames returns the engine and database names for ERD
+// introspection. When useSource is false, missing values are inferred from the
+// copy DSN; returns an error if the engine cannot be determined.
+func resolveERDTargetNames(cfg *config.Config, useSource bool, dsn string) (engineName, databaseName string, err error) {
+	engineName = cfg.Source.Engine
+	databaseName = cfg.Source.Database
+	if !useSource {
+		if inferredEngine, inferredDatabase, ok := inferERDTargetFromDSN(dsn); ok {
+			if engineName == "" {
+				engineName = inferredEngine
+			}
+			if databaseName == "" {
+				databaseName = inferredDatabase
+			}
+		}
+	}
+	if engineName == "" {
+		return "", "", fmt.Errorf("erd: database engine is unknown; configure source.engine or use a copy DSN with a recognizable format")
+	}
+	return engineName, databaseName, nil
+}
+
 // buildERDSourceDSN builds a DSN for direct connection to the source database.
 // Unlike copy container DSNs, this uses sslmode=require for Postgres (the
 // source is a real server, not a local container).
-func buildERDSourceDSN(eng, host string, port int, database, user, password string) string {
-	switch eng {
+func buildERDSourceDSN(src config.Source, password string) string {
+	switch src.Engine {
 	case "mysql":
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", user, password, host, port, database)
+		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", src.User, password, src.Host, src.Port, src.Database)
 	default: // postgres
-		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=require", user, password, host, port, database)
+		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=require", src.User, password, src.Host, src.Port, src.Database)
 	}
 }
 
