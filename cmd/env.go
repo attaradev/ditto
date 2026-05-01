@@ -66,7 +66,15 @@ func newEnvRunCmd() *cobra.Command {
 		DisableFlagParsing: false,
 		Args:               cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCopyExec(cmd, ttl, label, dumpURI, obfuscate, args)
+			return runCopyExec(cmd, copyExecOptions{
+				copyRunOptions: copyRunOptions{
+					TTL:       ttl,
+					Label:     label,
+					DumpURI:   dumpURI,
+					Obfuscate: obfuscate,
+				},
+				Command: args,
+			})
 		},
 	}
 
@@ -112,14 +120,15 @@ Destroy the copy when you are done:
 
 func runEnvExport(cmd *cobra.Command, ttl, label string) error {
 	client := copyClientFromContext(cmd)
+	detectedRunID, detectedJobName := detectRunMetadata()
 
 	runID := label
 	if runID == "" {
-		runID = detectRunID()
+		runID = detectedRunID
 	}
 	opts := copypkg.CreateOptions{
 		RunID:   runID,
-		JobName: detectJobName(),
+		JobName: detectedJobName,
 	}
 	if ttl != "" {
 		ttlSeconds, err := parseTTL(ttl)

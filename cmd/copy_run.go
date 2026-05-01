@@ -21,11 +21,11 @@ import (
 // isLocalFilePath returns true when s looks like a filesystem path rather than
 // a URI. A path starts with /, ./, ../, ~/, or contains no URI scheme at all.
 func isLocalFilePath(s string) bool {
-	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") ||
-		strings.HasPrefix(s, "../") || strings.HasPrefix(s, "~/") {
-		return true
+	for _, p := range []string{"/", "./", "../", "~/"} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
 	}
-	// No scheme separator means it cannot be a URI.
 	return !strings.Contains(s, "://")
 }
 
@@ -47,92 +47,131 @@ func serverURLFromContext(cmd *cobra.Command) string {
 	return resolveServerURL("")
 }
 
-// detectRunID returns the first non-empty value from a standard set of
-// automation run-identifier env vars, across common CI systems and local
-// dev tools. DITTO_RUN_ID always takes precedence.
-func detectRunID() string {
-	candidates := []string{
-		"DITTO_RUN_ID",       // explicit override (any environment)
-		"GITHUB_RUN_ID",      // GitHub Actions
-		"CI_PIPELINE_ID",     // GitLab CI
-		"CIRCLE_WORKFLOW_ID", // CircleCI
-		"TRAVIS_BUILD_ID",    // Travis CI
-		"BUILDKITE_BUILD_ID", // Buildkite
-		"BUILD_ID",           // Jenkins / generic
-	}
-	for _, k := range candidates {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	return ""
+type copyRunOptions struct {
+	TTL       string
+	Label     string
+	DumpURI   string
+	Obfuscate bool
 }
 
-// detectJobName returns the first non-empty value from a standard set of
-// job/step name env vars. DITTO_JOB_NAME always takes precedence.
-func detectJobName() string {
-	candidates := []string{
-		"DITTO_JOB_NAME",     // explicit override (any environment)
-		"GITHUB_JOB",         // GitHub Actions
-		"CI_JOB_NAME",        // GitLab CI
-		"CIRCLE_JOB",         // CircleCI
-		"TRAVIS_JOB_NAME",    // Travis CI
-		"BUILDKITE_STEP_KEY", // Buildkite
-		"JOB_NAME",           // Jenkins / generic
-	}
-	for _, k := range candidates {
-		if v := os.Getenv(k); v != "" {
-			return v
-		}
-	}
-	return ""
+type copyCreateOptions struct {
+	copyRunOptions
+	Format string
 }
 
-func runCopyCreate(cmd *cobra.Command, ttl, label, format, dumpURI string, obfuscate bool) error {
+type copyExecOptions struct {
+	copyRunOptions
+	Command []string
+}
+
+type ciEnvCandidate struct {
+	runID   string
+	jobName string
+}
+
+var ciEnvCandidates = []ciEnvCandidate{
+	{runID: "GITHUB_RUN_ID", jobName: "GITHUB_JOB"},
+	{runID: "CI_PIPELINE_ID", jobName: "CI_JOB_NAME"},
+	{runID: "CIRCLE_WORKFLOW_ID", jobName: "CIRCLE_JOB"},
+	{runID: "TRAVIS_BUILD_ID", jobName: "TRAVIS_JOB_NAME"},
+	{runID: "BUILDKITE_BUILD_ID", jobName: "BUILDKITE_STEP_KEY"},
+	{runID: "BUILD_ID", jobName: "JOB_NAME"},
+}
+
+func detectRunMetadata() (string, string) {
+	runID := os.Getenv("DITTO_RUN_ID")
+	jobName := os.Getenv("DITTO_JOB_NAME")
+	for _, candidate := range ciEnvCandidates {
+		if runID == "" {
+			runID = os.Getenv(candidate.runID)
+		}
+		if jobName == "" {
+			jobName = os.Getenv(candidate.jobName)
+		}
+		if runID != "" && jobName != "" {
+			break
+		}
+	}
+	return runID, jobName
+}
+
+func buildCreateOptions(cmd *cobra.Command, in copyRunOptions) (copypkg.CreateOptions, func(), error) {
+	opts := newCreateOptionsBase(in)
+	if err := applyCreateTTL(&opts, in.TTL); err != nil {
+		return opts, func() {}, err
+	}
+	cleanup, err := applyCreateDump(cmd, &opts, in.DumpURI)
+	if err != nil {
+		return opts, func() {}, err
+	}
+	return opts, cleanup, nil
+}
+
+func newCreateOptionsBase(in copyRunOptions) copypkg.CreateOptions {
+	detectedRunID, detectedJobName := detectRunMetadata()
+	runID := in.Label
+	if runID == "" {
+		runID = detectedRunID
+	}
+	return copypkg.CreateOptions{
+		RunID:     runID,
+		JobName:   detectedJobName,
+		Obfuscate: in.Obfuscate,
+	}
+}
+
+func applyCreateTTL(opts *copypkg.CreateOptions, ttl string) error {
+	if ttl == "" {
+		return nil
+	}
+	ttlSeconds, err := parseTTL(ttl)
+	if err != nil {
+		return err
+	}
+	opts.TTLSeconds = ttlSeconds
+	return nil
+}
+
+func applyCreateDump(cmd *cobra.Command, opts *copypkg.CreateOptions, dumpURI string) (func(), error) {
+	cleanup := func() {}
+	if dumpURI == "" {
+		return cleanup, nil
+	}
+	if serverURLFromContext(cmd) != "" {
+		if isLocalFilePath(dumpURI) {
+			return cleanup, fmt.Errorf("--dump with a local path is not supported in remote mode; use a URI (s3://, https://) or omit the flag to use the host's configured dump")
+		}
+		opts.DumpURI = dumpURI
+		return cleanup, nil
+	}
+
+	localPath, cl, err := dumpfetch.Fetch(cmd.Context(), dumpURI)
+	if err != nil {
+		return cleanup, fmt.Errorf("--dump: %w", err)
+	}
+	opts.DumpPath = localPath
+	return cl, nil
+}
+
+func runCopyCreate(cmd *cobra.Command, in copyCreateOptions) error {
 	client := copyClientFromContext(cmd)
 
-	runID := label
-	if runID == "" {
-		runID = detectRunID()
+	opts, cleanup, err := buildCreateOptions(cmd, in.copyRunOptions)
+	if err != nil {
+		return err
 	}
-	opts := copypkg.CreateOptions{
-		RunID:   runID,
-		JobName: detectJobName(),
-	}
-	if ttl != "" {
-		ttlSeconds, err := parseTTL(ttl)
-		if err != nil {
-			return err
-		}
-		opts.TTLSeconds = ttlSeconds
-	}
-	if dumpURI != "" {
-		if serverURLFromContext(cmd) != "" {
-			if isLocalFilePath(dumpURI) {
-				return fmt.Errorf("--dump with a local path is not supported in remote mode; use a URI (s3://, https://) or omit the flag to use the host's configured dump")
-			}
-			opts.DumpURI = dumpURI
-		} else {
-			localPath, cleanup, err := dumpfetch.Fetch(cmd.Context(), dumpURI)
-			if err != nil {
-				return fmt.Errorf("--dump: %w", err)
-			}
-			defer cleanup()
-			opts.DumpPath = localPath
-		}
-	}
-	opts.Obfuscate = obfuscate
+	defer cleanup()
 
 	c, err := client.Create(cmd.Context(), opts)
 	if err != nil {
 		return err
 	}
 
-	if isPipe() || format == "pipe" {
+	if isPipe() || in.Format == "pipe" {
 		fmt.Println(c.ConnectionString)
 		return nil
 	}
-	if format == "json" {
+	if in.Format == "json" {
 		return json.NewEncoder(os.Stdout).Encode(c)
 	}
 
@@ -167,25 +206,11 @@ func runCopyLogs(cmd *cobra.Command, id string) error {
 		if isPipe() {
 			return json.NewEncoder(os.Stdout).Encode(events)
 		}
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		if _, err := fmt.Fprintln(w, "TIME\tACTION\tACTOR\tMETADATA"); err != nil {
-			return err
+		entries := make([]eventEntry, len(events))
+		for i, e := range events {
+			entries[i] = eventEntry{e.CreatedAt, e.Action, e.Actor, e.Metadata}
 		}
-		for _, e := range events {
-			meta := ""
-			if len(e.Metadata) > 0 {
-				b, err := json.Marshal(e.Metadata)
-				if err != nil {
-					return fmt.Errorf("marshal event metadata: %w", err)
-				}
-				meta = string(b)
-			}
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-				e.CreatedAt.Format(time.RFC3339), e.Action, e.Actor, meta); err != nil {
-				return err
-			}
-		}
-		return w.Flush()
+		return writeEventsTable(entries)
 	}
 
 	es := eventStoreFromContext(cmd)
@@ -196,6 +221,21 @@ func runCopyLogs(cmd *cobra.Command, id string) error {
 	if isPipe() {
 		return json.NewEncoder(os.Stdout).Encode(events)
 	}
+	entries := make([]eventEntry, len(events))
+	for i, e := range events {
+		entries[i] = eventEntry{e.CreatedAt, e.Action, e.Actor, e.Metadata}
+	}
+	return writeEventsTable(entries)
+}
+
+type eventEntry struct {
+	CreatedAt time.Time
+	Action    string
+	Actor     string
+	Metadata  map[string]any
+}
+
+func writeEventsTable(events []eventEntry) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if _, err := fmt.Fprintln(w, "TIME\tACTION\tACTOR\tMETADATA"); err != nil {
 		return err
@@ -227,41 +267,15 @@ var (
 // runCopyExec creates a copy, runs command with DATABASE_URL set, then destroys
 // the copy regardless of how the command exits. The command's exit code is
 // propagated: callers can inspect it via ExitError.
-func runCopyExec(cmd *cobra.Command, ttl, label, dumpURI string, obfuscate bool, command []string) error {
+func runCopyExec(cmd *cobra.Command, in copyExecOptions) error {
 	client := copyClientFromContext(cmd)
 	ctx := cmd.Context()
 
-	runID := label
-	if runID == "" {
-		runID = detectRunID()
+	opts, cleanup, err := buildCreateOptions(cmd, in.copyRunOptions)
+	if err != nil {
+		return err
 	}
-	opts := copypkg.CreateOptions{
-		RunID:   runID,
-		JobName: detectJobName(),
-	}
-	if ttl != "" {
-		ttlSeconds, err := parseTTL(ttl)
-		if err != nil {
-			return err
-		}
-		opts.TTLSeconds = ttlSeconds
-	}
-	if dumpURI != "" {
-		if serverURLFromContext(cmd) != "" {
-			if isLocalFilePath(dumpURI) {
-				return fmt.Errorf("--dump with a local path is not supported in remote mode; use a URI (s3://, https://) or omit the flag to use the host's configured dump")
-			}
-			opts.DumpURI = dumpURI
-		} else {
-			localPath, cleanup, err := dumpfetch.Fetch(ctx, dumpURI)
-			if err != nil {
-				return fmt.Errorf("--dump: %w", err)
-			}
-			defer cleanup()
-			opts.DumpPath = localPath
-		}
-	}
-	opts.Obfuscate = obfuscate
+	defer cleanup()
 
 	c, err := client.Create(ctx, opts)
 	if err != nil {
@@ -276,7 +290,7 @@ func runCopyExec(cmd *cobra.Command, ttl, label, dumpURI string, obfuscate bool,
 	}()
 
 	// #nosec G204 -- command is supplied by the operator, not end-user input.
-	proc := exec.CommandContext(ctx, command[0], command[1:]...)
+	proc := exec.CommandContext(ctx, in.Command[0], in.Command[1:]...)
 	proc.Stdin = os.Stdin
 	proc.Stdout = os.Stdout
 	proc.Stderr = os.Stderr

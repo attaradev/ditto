@@ -74,7 +74,15 @@ func runHost(cmd *cobra.Command) error {
 	defer sched.Stop()
 	slog.Info("host: dump scheduler started")
 
-	srv := server.New(cfg.Server.Addr, mgr, refresher, cs, es, authn, makeStatusFn(cs, cfg))
+	srv := server.New(server.Config{
+		Addr:       cfg.Server.Addr,
+		Controller: mgr,
+		Refresher:  refresher,
+		Copies:     cs,
+		Events:     es,
+		Auth:       authn,
+		StatusFn:   makeStatusFn(cs, cfg),
+	})
 
 	slog.Info("host: running", "addr", cfg.Server.Addr, "advertise_host", cfg.Server.AdvertiseHost)
 	return runEventLoop(ctx, srv, mgr)

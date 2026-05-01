@@ -63,7 +63,15 @@ Use --dump to restore from a specific file instead of the default dump path:
     ditto copy create --dump s3://my-bucket/backups/latest.gz
     ditto copy create --dump https://example.com/dump.gz`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCopyCreate(cmd, ttl, label, format, dump, obfuscate)
+			return runCopyCreate(cmd, copyCreateOptions{
+				copyRunOptions: copyRunOptions{
+					TTL:       ttl,
+					Label:     label,
+					DumpURI:   dump,
+					Obfuscate: obfuscate,
+				},
+				Format: format,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&ttl, "ttl", "", "Override copy lifetime (for example: 1h, 30m)")
@@ -102,7 +110,15 @@ The command's exit code is preserved.`,
 		Args:               cobra.MinimumNArgs(1),
 		DisableFlagParsing: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCopyExec(cmd, ttl, label, dump, obfuscate, args)
+			return runCopyExec(cmd, copyExecOptions{
+				copyRunOptions: copyRunOptions{
+					TTL:       ttl,
+					Label:     label,
+					DumpURI:   dump,
+					Obfuscate: obfuscate,
+				},
+				Command: args,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&ttl, "ttl", "", "Copy lifetime (e.g. 1h, 30m); defaults to copy_ttl_seconds in config")

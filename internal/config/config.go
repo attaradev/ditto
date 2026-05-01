@@ -151,22 +151,10 @@ func Load(path string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
-	if path != "" {
-		v.SetConfigFile(path)
-	} else {
-		v.SetConfigName("ditto")
-		v.SetConfigType("yaml")
-		v.AddConfigPath(".")
-		v.AddConfigPath("$HOME/.ditto")
-		v.AddConfigPath("/etc/ditto")
-	}
+	configureViperFile(v, path)
 
-	if err := v.ReadInConfig(); err != nil {
-		// A missing config file is only an error when a path was explicitly set.
-		if path != "" {
-			return nil, fmt.Errorf("config: read %s: %w", path, err)
-		}
-		// Otherwise fall through with defaults.
+	if err := readViperConfig(v, path); err != nil {
+		return nil, err
 	}
 
 	var cfg Config
@@ -186,6 +174,28 @@ func Load(path string) (*Config, error) {
 	return &cfg, validate(&cfg)
 }
 
+func configureViperFile(v *viper.Viper, path string) {
+	if path != "" {
+		v.SetConfigFile(path)
+		return
+	}
+	v.SetConfigName("ditto")
+	v.SetConfigType("yaml")
+	v.AddConfigPath(".")
+	v.AddConfigPath("$HOME/.ditto")
+	v.AddConfigPath("/etc/ditto")
+}
+
+func readViperConfig(v *viper.Viper, path string) error {
+	if err := v.ReadInConfig(); err != nil {
+		// A missing config file is only an error when a path was explicitly set.
+		if path != "" {
+			return fmt.Errorf("config: read %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
 // applySourceURL parses src.URL and back-fills any individual Source fields
 // that are still at their zero values. Explicit fields always take precedence.
 func applySourceURL(src *Source) error {
@@ -194,39 +204,75 @@ func applySourceURL(src *Source) error {
 		return err
 	}
 
-	// Derive engine from scheme.
+	if err := applySourceEngine(src, u); err != nil {
+		return err
+	}
+	applySourceHost(src, u)
+	if err := applySourcePort(src, u); err != nil {
+		return err
+	}
+	applySourceDatabase(src, u)
+	applySourceUser(src, u)
+	applySourcePassword(src, u)
+	return nil
+}
+
+func applySourceEngine(src *Source, u *url.URL) error {
+	if src.Engine != "" {
+		return nil
+	}
 	engine, err := engineFromScheme(u.Scheme)
 	if err != nil {
 		return err
 	}
+	src.Engine = engine
+	return nil
+}
 
-	if src.Engine == "" {
-		src.Engine = engine
-	}
+func applySourceHost(src *Source, u *url.URL) {
 	if src.Host == "" {
 		src.Host = u.Hostname()
 	}
-	if src.Port == 0 {
-		if portStr := u.Port(); portStr != "" {
-			p, err := strconv.Atoi(portStr)
-			if err != nil {
-				return fmt.Errorf("invalid port %q: %w", portStr, err)
-			}
-			src.Port = p
-		}
+}
+
+func applySourcePort(src *Source, u *url.URL) error {
+	if src.Port != 0 {
+		return nil
 	}
+	portStr := u.Port()
+	if portStr == "" {
+		return nil
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		return fmt.Errorf("invalid port %q: %w", portStr, err)
+	}
+	src.Port = p
+	return nil
+}
+
+func applySourceDatabase(src *Source, u *url.URL) {
 	if src.Database == "" {
 		src.Database = strings.TrimPrefix(u.Path, "/")
 	}
+}
+
+func applySourceUser(src *Source, u *url.URL) {
 	if src.User == "" && u.User != nil {
 		src.User = u.User.Username()
 	}
-	if src.Password == "" && src.PasswordSecret == "" && u.User != nil {
-		if p, ok := u.User.Password(); ok {
-			src.Password = p
-		}
+}
+
+func applySourcePassword(src *Source, u *url.URL) {
+	if src.Password != "" || src.PasswordSecret != "" {
+		return
 	}
-	return nil
+	if u.User == nil {
+		return
+	}
+	if p, ok := u.User.Password(); ok {
+		src.Password = p
+	}
 }
 
 // applyPortDefault sets a sensible default port when none was specified.
@@ -276,61 +322,15 @@ func engineFromScheme(scheme string) (string, error) {
 
 // validate checks that required fields are present.
 func validate(cfg *Config) error {
-	var missing []string
-	if cfg.Source.Engine == "" {
-		missing = append(missing, "source.engine")
-	}
-	if cfg.Source.Host == "" {
-		missing = append(missing, "source.host")
-	}
-	if cfg.Source.Database == "" {
-		missing = append(missing, "source.database")
-	}
-	if cfg.Source.User == "" {
-		missing = append(missing, "source.user")
-	}
-	if cfg.Source.Password == "" && cfg.Source.PasswordSecret == "" {
-		missing = append(missing, "source.password or source.password_secret")
-	}
+	missing := sourceMissingFields(cfg.Source)
 	if cfg.CopyTTLSeconds <= 0 {
 		return fmt.Errorf("config: copy_ttl_seconds must be greater than zero")
 	}
-	if cfg.PortPoolStart <= 0 || cfg.PortPoolEnd <= 0 || cfg.PortPoolEnd < cfg.PortPoolStart {
+	if !isValidPortPoolRange(cfg.PortPoolStart, cfg.PortPoolEnd) {
 		return fmt.Errorf("config: invalid port pool range %d-%d", cfg.PortPoolStart, cfg.PortPoolEnd)
 	}
 	if cfg.Server.Enabled {
-		if cfg.Server.AdvertiseHost == "" {
-			missing = append(missing, "server.advertise_host")
-		}
-		if cfg.Server.DBBindHost == "" {
-			missing = append(missing, "server.db_bind_host")
-		}
-		if cfg.Server.CopySecretSecret == "" {
-			missing = append(missing, "server.copy_secret_secret")
-		}
-		// Auth: require either static_token OR full OIDC config, not both.
-		hasStatic := cfg.Server.Auth.StaticToken != ""
-		hasOIDC := cfg.Server.Auth.Issuer != "" || cfg.Server.Auth.Audience != "" || cfg.Server.Auth.JWKSURL != ""
-		if !hasStatic && !hasOIDC {
-			missing = append(missing, "server.auth.static_token or server.auth.issuer+audience+jwks_url")
-		}
-		if hasOIDC && !hasStatic {
-			if cfg.Server.Auth.Issuer == "" {
-				missing = append(missing, "server.auth.issuer")
-			}
-			if cfg.Server.Auth.Audience == "" {
-				missing = append(missing, "server.auth.audience")
-			}
-			if cfg.Server.Auth.JWKSURL == "" {
-				missing = append(missing, "server.auth.jwks_url")
-			}
-		}
-		if cfg.Server.DBTLS.CertFile == "" {
-			missing = append(missing, "server.db_tls.cert_file")
-		}
-		if cfg.Server.DBTLS.KeyFile == "" {
-			missing = append(missing, "server.db_tls.key_file")
-		}
+		validateServerConfig(cfg.Server, &missing)
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: missing required fields: %v", missing)
@@ -341,35 +341,121 @@ func validate(cfg *Config) error {
 	return validateObfuscation(cfg.Obfuscation.Rules)
 }
 
+func sourceMissingFields(src Source) []string {
+	var missing []string
+	if src.Engine == "" {
+		missing = append(missing, "source.engine")
+	}
+	if src.Host == "" {
+		missing = append(missing, "source.host")
+	}
+	if src.Database == "" {
+		missing = append(missing, "source.database")
+	}
+	if src.User == "" {
+		missing = append(missing, "source.user")
+	}
+	if src.Password == "" && src.PasswordSecret == "" {
+		missing = append(missing, "source.password or source.password_secret")
+	}
+	return missing
+}
+
+func isValidPortPoolRange(start, end int) bool {
+	if start <= 0 || end <= 0 {
+		return false
+	}
+	return end >= start
+}
+
+func validateServerConfig(srv ServerConfig, missing *[]string) {
+	if srv.AdvertiseHost == "" {
+		*missing = append(*missing, "server.advertise_host")
+	}
+	if srv.DBBindHost == "" {
+		*missing = append(*missing, "server.db_bind_host")
+	}
+	if srv.CopySecretSecret == "" {
+		*missing = append(*missing, "server.copy_secret_secret")
+	}
+	validateServerAuth(srv.Auth, missing)
+	if srv.DBTLS.CertFile == "" {
+		*missing = append(*missing, "server.db_tls.cert_file")
+	}
+	if srv.DBTLS.KeyFile == "" {
+		*missing = append(*missing, "server.db_tls.key_file")
+	}
+}
+
+func hasOIDCFieldSet(auth ServerAuthConfig) bool {
+	return auth.Issuer != "" || auth.Audience != "" || auth.JWKSURL != ""
+}
+
+// validateServerAuth appends missing field names when the auth config is
+// neither a complete static-token config nor a complete OIDC config.
+func validateServerAuth(auth ServerAuthConfig, missing *[]string) {
+	hasStatic := auth.StaticToken != ""
+	hasOIDC := hasOIDCFieldSet(auth)
+	if !hasStatic && !hasOIDC {
+		*missing = append(*missing, "server.auth.static_token or server.auth.issuer+audience+jwks_url")
+	}
+	if hasOIDC && !hasStatic {
+		validateOIDCFields(auth, missing)
+	}
+}
+
+func validateOIDCFields(auth ServerAuthConfig, missing *[]string) {
+	if auth.Issuer == "" {
+		*missing = append(*missing, "server.auth.issuer")
+	}
+	if auth.Audience == "" {
+		*missing = append(*missing, "server.auth.audience")
+	}
+	if auth.JWKSURL == "" {
+		*missing = append(*missing, "server.auth.jwks_url")
+	}
+}
+
 func validateTargets(targets map[string]Target) error {
 	for name, target := range targets {
-		var missing []string
-		if target.Engine == "" {
-			missing = append(missing, "engine")
+		if err := validateTarget(name, target); err != nil {
+			return err
 		}
-		if target.Host == "" {
-			missing = append(missing, "host")
-		}
-		if target.Database == "" {
-			missing = append(missing, "database")
-		}
-		if target.User == "" {
-			missing = append(missing, "user")
-		}
-		if target.Password == "" && target.PasswordSecret == "" {
-			missing = append(missing, "password or password_secret")
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("config: target %q missing required fields: %v", name, missing)
-		}
-		switch target.Engine {
-		case "postgres", "mysql":
-		default:
-			return fmt.Errorf("config: target %q has unsupported engine %q (supported: postgres, mysql)", name, target.Engine)
-		}
-		if target.Port <= 0 {
-			return fmt.Errorf("config: target %q has invalid port %d", name, target.Port)
-		}
+	}
+	return nil
+}
+
+func targetMissingFields(t Target) []string {
+	var missing []string
+	if t.Engine == "" {
+		missing = append(missing, "engine")
+	}
+	if t.Host == "" {
+		missing = append(missing, "host")
+	}
+	if t.Database == "" {
+		missing = append(missing, "database")
+	}
+	if t.User == "" {
+		missing = append(missing, "user")
+	}
+	if t.Password == "" && t.PasswordSecret == "" {
+		missing = append(missing, "password or password_secret")
+	}
+	return missing
+}
+
+func validateTarget(name string, target Target) error {
+	if missing := targetMissingFields(target); len(missing) > 0 {
+		return fmt.Errorf("config: target %q missing required fields: %v", name, missing)
+	}
+	switch target.Engine {
+	case "postgres", "mysql":
+	default:
+		return fmt.Errorf("config: target %q has unsupported engine %q (supported: postgres, mysql)", name, target.Engine)
+	}
+	if target.Port <= 0 {
+		return fmt.Errorf("config: target %q has invalid port %d", name, target.Port)
 	}
 	return nil
 }
@@ -393,21 +479,28 @@ var validReplaceTypes = map[string]bool{
 
 func validateObfuscation(rules []ObfuscationRule) error {
 	for i, r := range rules {
-		if r.Table == "" {
-			return fmt.Errorf("config: obfuscation rule %d: table is required", i)
+		if err := validateObfuscationRule(i, r); err != nil {
+			return err
 		}
-		if r.Column == "" {
-			return fmt.Errorf("config: obfuscation rule %d: column is required", i)
-		}
-		if !validStrategies[r.Strategy] {
-			return fmt.Errorf("config: obfuscation rule %d: unknown strategy %q (use: nullify, redact, mask, hash)", i, r.Strategy)
-		}
-		if r.MaskChar != "" && len([]rune(r.MaskChar)) != 1 {
-			return fmt.Errorf("config: obfuscation rule %d: mask_char must be a single character", i)
-		}
-		if r.Strategy == "replace" && !validReplaceTypes[r.Type] {
-			return fmt.Errorf("config: obfuscation rule %d: replace strategy requires type (email, name, phone, ip, url, uuid)", i)
-		}
+	}
+	return nil
+}
+
+func validateObfuscationRule(i int, r ObfuscationRule) error {
+	if r.Table == "" {
+		return fmt.Errorf("config: obfuscation rule %d: table is required", i)
+	}
+	if r.Column == "" {
+		return fmt.Errorf("config: obfuscation rule %d: column is required", i)
+	}
+	if !validStrategies[r.Strategy] {
+		return fmt.Errorf("config: obfuscation rule %d: unknown strategy %q (use: nullify, redact, mask, hash)", i, r.Strategy)
+	}
+	if r.MaskChar != "" && len([]rune(r.MaskChar)) != 1 {
+		return fmt.Errorf("config: obfuscation rule %d: mask_char must be a single character", i)
+	}
+	if r.Strategy == "replace" && !validReplaceTypes[r.Type] {
+		return fmt.Errorf("config: obfuscation rule %d: replace strategy requires type (email, name, phone, ip, url, uuid)", i)
 	}
 	return nil
 }

@@ -30,12 +30,7 @@ port_pool_start: 5433
 port_pool_end: 5600
 docker_host: unix:///var/run/docker.sock
 `
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "ditto.yaml")
-	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+	cfgPath := writeConfigFile(t, content)
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -62,121 +57,131 @@ docker_host: unix:///var/run/docker.sock
 }
 
 func TestConfigMissingRequired(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "ditto.yaml")
-	// Write a config that has no source fields.
-	if err := os.WriteFile(cfgPath, []byte("copy_ttl_seconds: 100\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+	cfgPath := writeConfigFile(t, "copy_ttl_seconds: 100\n")
 	_, err := Load(cfgPath)
 	if err == nil {
 		t.Fatal("expected validation error for missing required fields, got nil")
 	}
 }
 
+type sourceWant struct {
+	engine string
+	host   string
+	port   int
+	db     string
+	user   string
+	pass   string
+}
+
+type sourceURLInput struct {
+	scheme   string
+	user     string
+	password string
+	host     string
+	port     int
+	database string
+}
+
+func assertSourceConfig(t *testing.T, got Source, want sourceWant) {
+	t.Helper()
+	if got.Engine != want.engine {
+		t.Errorf("Engine: got %q, want %q", got.Engine, want.engine)
+	}
+	if got.Host != want.host {
+		t.Errorf("Host: got %q, want %q", got.Host, want.host)
+	}
+	if want.port != 0 && got.Port != want.port {
+		t.Errorf("Port: got %d, want %d", got.Port, want.port)
+	}
+	if got.Database != want.db {
+		t.Errorf("Database: got %q, want %q", got.Database, want.db)
+	}
+	if got.User != want.user {
+		t.Errorf("User: got %q, want %q", got.User, want.user)
+	}
+	if got.Password != want.pass {
+		t.Errorf("Password: got %q, want %q", got.Password, want.pass)
+	}
+}
+
 func TestConfigSourceURL(t *testing.T) {
 	tests := []struct {
-		name       string
-		url        func() string
-		wantEngine string
-		wantHost   string
-		wantPort   int
-		wantDB     string
-		wantUser   string
-		wantPass   string
+		name string
+		url  string
+		want sourceWant
 	}{
 		{
 			name: "postgres scheme",
-			url: func() string {
-				return testSourceURL("postgres", "ditto_dump", "secret", "mydb.us-east-1.rds.amazonaws.com", 5432, "myapp")
-			},
-			wantEngine: "postgres",
-			wantHost:   "mydb.us-east-1.rds.amazonaws.com",
-			wantPort:   5432,
-			wantDB:     "myapp",
-			wantUser:   "ditto_dump",
-			wantPass:   "secret",
+			url: testSourceURL(sourceURLInput{
+				scheme:   "postgres",
+				user:     "ditto_dump",
+				password: "secret",
+				host:     "mydb.us-east-1.rds.amazonaws.com",
+				port:     5432,
+				database: "myapp",
+			}),
+			want: sourceWant{engine: "postgres", host: "mydb.us-east-1.rds.amazonaws.com", port: 5432, db: "myapp", user: "ditto_dump", pass: "secret"},
 		},
 		{
 			name: "postgresql scheme",
-			url: func() string {
-				return testSourceURL("postgresql", "user", "pass", "localhost", 0, "testdb")
-			},
-			wantEngine: "postgres",
-			wantHost:   "localhost",
-			wantDB:     "testdb",
-			wantUser:   "user",
-			wantPass:   "pass",
+			url: testSourceURL(sourceURLInput{
+				scheme:   "postgresql",
+				user:     "user",
+				password: "pass",
+				host:     "localhost",
+				database: "testdb",
+			}),
+			want: sourceWant{engine: "postgres", host: "localhost", db: "testdb", user: "user", pass: "pass"},
 		},
 		{
 			name: "mysql scheme maps to mysql engine",
-			url: func() string {
-				return testSourceURL("mysql", "root", "pass", "127.0.0.1", 3306, "app")
-			},
-			wantEngine: "mysql",
-			wantHost:   "127.0.0.1",
-			wantPort:   3306,
-			wantDB:     "app",
-			wantUser:   "root",
-			wantPass:   "pass",
+			url: testSourceURL(sourceURLInput{
+				scheme:   "mysql",
+				user:     "root",
+				password: "pass",
+				host:     "127.0.0.1",
+				port:     3306,
+				database: "app",
+			}),
+			want: sourceWant{engine: "mysql", host: "127.0.0.1", port: 3306, db: "app", user: "root", pass: "pass"},
 		},
 		{
 			name: "mariadb scheme maps to mysql engine",
-			url: func() string {
-				return testSourceURL("mariadb", "user", "pass", "db.example.com", 3307, "mydb")
-			},
-			wantEngine: "mysql",
-			wantHost:   "db.example.com",
-			wantPort:   3307,
-			wantDB:     "mydb",
-			wantUser:   "user",
-			wantPass:   "pass",
+			url: testSourceURL(sourceURLInput{
+				scheme:   "mariadb",
+				user:     "user",
+				password: "pass",
+				host:     "db.example.com",
+				port:     3307,
+				database: "mydb",
+			}),
+			want: sourceWant{engine: "mysql", host: "db.example.com", port: 3307, db: "mydb", user: "user", pass: "pass"},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			cfgPath := filepath.Join(dir, "ditto.yaml")
-			content := "source:\n  url: " + tc.url() + "\n"
-			if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-				t.Fatal(err)
-			}
-
+			cfgPath := writeConfigFile(t, "source:\n  url: "+tc.url+"\n")
 			cfg, err := Load(cfgPath)
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-
-			if cfg.Source.Engine != tc.wantEngine {
-				t.Errorf("Engine: got %q, want %q", cfg.Source.Engine, tc.wantEngine)
-			}
-			if cfg.Source.Host != tc.wantHost {
-				t.Errorf("Host: got %q, want %q", cfg.Source.Host, tc.wantHost)
-			}
-			if tc.wantPort != 0 && cfg.Source.Port != tc.wantPort {
-				t.Errorf("Port: got %d, want %d", cfg.Source.Port, tc.wantPort)
-			}
-			if cfg.Source.Database != tc.wantDB {
-				t.Errorf("Database: got %q, want %q", cfg.Source.Database, tc.wantDB)
-			}
-			if cfg.Source.User != tc.wantUser {
-				t.Errorf("User: got %q, want %q", cfg.Source.User, tc.wantUser)
-			}
-			if cfg.Source.Password != tc.wantPass {
-				t.Errorf("Password: got %q, want %q", cfg.Source.Password, tc.wantPass)
-			}
+			assertSourceConfig(t, cfg.Source, tc.want)
 		})
 	}
 }
 
 func TestConfigSourceURLExplicitFieldsWin(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "ditto.yaml")
-	sourceURL := testSourceURL("postgres", "urluser", "urlpass", "urlhost", 5432, "urldb")
+	sourceURL := testSourceURL(sourceURLInput{
+		scheme:   "postgres",
+		user:     "urluser",
+		password: "urlpass",
+		host:     "urlhost",
+		port:     5432,
+		database: "urldb",
+	})
 	// engine and host are set explicitly — they must not be overwritten by the URL.
-	content := fmt.Sprintf(`
+	cfgPath := writeConfigFile(t, fmt.Sprintf(`
 source:
   url: %s
   engine: mysql
@@ -184,11 +189,7 @@ source:
   user: explicit-user
   password: explicit-pass
   database: explicit-db
-`, sourceURL)
-	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+`, sourceURL))
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -206,13 +207,13 @@ source:
 }
 
 func TestConfigSourceURLInvalidScheme(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "ditto.yaml")
-	content := "source:\n  url: " + testSourceURL("mongodb", "user", "pass", "host", 0, "db") + "\n"
-	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+	cfgPath := writeConfigFile(t, "source:\n  url: "+testSourceURL(sourceURLInput{
+		scheme:   "mongodb",
+		user:     "user",
+		password: "pass",
+		host:     "host",
+		database: "db",
+	})+"\n")
 	_, err := Load(cfgPath)
 	if err == nil {
 		t.Fatal("expected error for unsupported scheme, got nil")
@@ -220,20 +221,14 @@ func TestConfigSourceURLInvalidScheme(t *testing.T) {
 }
 
 func TestConfigEnvOverride(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "ditto.yaml")
-	content := `
+	cfgPath := writeConfigFile(t, `
 source:
   engine: postgres
   host: original.rds.amazonaws.com
   database: myapp
   user: ditto
   password: pass
-`
-	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+`)
 	t.Setenv("DITTO_SOURCE_HOST", "override.rds.amazonaws.com")
 
 	cfg, err := Load(cfgPath)
@@ -247,9 +242,7 @@ source:
 }
 
 func TestConfigServerEnabledRequiresSharedHostFields(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "ditto.yaml")
-	content := `
+	cfgPath := writeConfigFile(t, `
 source:
   engine: postgres
   host: source.example.com
@@ -258,11 +251,7 @@ source:
   password: secret
 server:
   enabled: true
-`
-	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+`)
 	_, err := Load(cfgPath)
 	if err == nil {
 		t.Fatal("Load: expected validation error for missing shared-host fields")
@@ -280,9 +269,7 @@ server:
 }
 
 func TestConfigTargets(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "ditto.yaml")
-	content := `
+	cfgPath := writeConfigFile(t, `
 source:
   engine: postgres
   host: source.example.com
@@ -298,11 +285,7 @@ targets:
     user: ditto_refresh
     password_secret: env:DITTO_TARGET_PASSWORD
     allow_destructive_refresh: true
-`
-	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+`)
 	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -320,9 +303,7 @@ targets:
 }
 
 func TestConfigInvalidTarget(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "ditto.yaml")
-	content := `
+	cfgPath := writeConfigFile(t, `
 source:
   engine: postgres
   host: source.example.com
@@ -337,11 +318,7 @@ targets:
     database: app
     user: ditto_refresh
     password: secret
-`
-	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+`)
 	_, err := Load(cfgPath)
 	if err == nil {
 		t.Fatal("Load: expected invalid target error, got nil")
@@ -351,15 +328,25 @@ targets:
 	}
 }
 
-func testSourceURL(scheme, user, password, host string, port int, database string) string {
-	u := &url.URL{
-		Scheme: scheme,
-		User:   url.UserPassword(user, password),
-		Host:   host,
-		Path:   "/" + database,
+func writeConfigFile(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ditto.yaml")
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if port != 0 {
-		u.Host = u.Host + ":" + fmt.Sprint(port)
+	return cfgPath
+}
+
+func testSourceURL(in sourceURLInput) string {
+	u := &url.URL{
+		Scheme: in.scheme,
+		User:   url.UserPassword(in.user, in.password),
+		Host:   in.host,
+		Path:   "/" + in.database,
+	}
+	if in.port != 0 {
+		u.Host = u.Host + ":" + fmt.Sprint(in.port)
 	}
 	return u.String()
 }

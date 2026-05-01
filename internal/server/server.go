@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -35,6 +36,17 @@ type Authenticator interface {
 
 type StatusResponse = apiv2.StatusResponse
 
+// Config holds the dependencies and settings for New.
+type Config struct {
+	Addr       string
+	Controller Controller
+	Refresher  Refresher
+	Copies     *store.CopyStore
+	Events     *store.EventStore
+	Auth       Authenticator
+	StatusFn   func() StatusResponse
+}
+
 type Server struct {
 	controller Controller
 	refresher  Refresher
@@ -47,22 +59,14 @@ type Server struct {
 
 type principalKey struct{}
 
-func New(
-	addr string,
-	controller Controller,
-	refresher Refresher,
-	copies *store.CopyStore,
-	events *store.EventStore,
-	auth Authenticator,
-	statusFn func() StatusResponse,
-) *Server {
+func New(cfg Config) *Server {
 	s := &Server{
-		controller: controller,
-		refresher:  refresher,
-		copies:     copies,
-		events:     events,
-		auth:       auth,
-		statusFn:   statusFn,
+		controller: cfg.Controller,
+		refresher:  cfg.Refresher,
+		copies:     cfg.Copies,
+		events:     cfg.Events,
+		auth:       cfg.Auth,
+		statusFn:   cfg.StatusFn,
 	}
 
 	mux := http.NewServeMux()
@@ -74,7 +78,7 @@ func New(
 	mux.HandleFunc("POST /v2/targets/{name}/refresh", s.authenticated(s.handleTargetRefresh))
 
 	s.srv = &http.Server{
-		Addr:         addr,
+		Addr:         cfg.Addr,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 10 * time.Minute,
@@ -115,18 +119,14 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req apiv2.CreateCopyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
+	if err := decodeBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	if req.TTLSeconds != nil && *req.TTLSeconds <= 0 {
-		writeError(w, http.StatusBadRequest, "ttl_seconds must be greater than zero")
+	ttlSeconds, err := resolveTTL(req.TTLSeconds)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
-	}
-
-	ttlSeconds := 0
-	if req.TTLSeconds != nil {
-		ttlSeconds = *req.TTLSeconds
 	}
 
 	opts := copypkg.CreateOptions{
@@ -137,7 +137,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Obfuscate:    req.Obfuscate,
 	}
 	if req.DumpURI != "" {
-		if !strings.HasPrefix(req.DumpURI, "s3://") && !strings.HasPrefix(req.DumpURI, "https://") {
+		if !isValidRemoteDumpURI(req.DumpURI) {
 			writeError(w, http.StatusBadRequest, "dump_uri must be an s3:// or https:// URI")
 			return
 		}
@@ -228,26 +228,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	principal, ok := principalFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	if !principal.IsAdmin {
-		writeError(w, http.StatusForbidden, "forbidden")
+	if _, ok := requireAdminPrincipal(w, r); !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.statusFn())
 }
 
 func (s *Server) handleTargetRefresh(w http.ResponseWriter, r *http.Request) {
-	principal, ok := principalFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	if !principal.IsAdmin {
-		writeError(w, http.StatusForbidden, "forbidden")
+	if _, ok := requireAdminPrincipal(w, r); !ok {
 		return
 	}
 	if s.refresher == nil {
@@ -256,11 +244,11 @@ func (s *Server) handleTargetRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req apiv2.RefreshTargetRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
+	if err := decodeBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	if req.DumpURI != "" && !strings.HasPrefix(req.DumpURI, "s3://") && !strings.HasPrefix(req.DumpURI, "https://") {
+	if req.DumpURI != "" && !isValidRemoteDumpURI(req.DumpURI) {
 		writeError(w, http.StatusBadRequest, "dump_uri must be an s3:// or https:// URI")
 		return
 	}
@@ -336,6 +324,19 @@ func (s *Server) authorizedCopy(w http.ResponseWriter, r *http.Request) (*store.
 func principalFromContext(ctx context.Context) (*oidc.Principal, bool) {
 	principal, ok := ctx.Value(principalKey{}).(*oidc.Principal)
 	return principal, ok
+}
+
+func requireAdminPrincipal(w http.ResponseWriter, r *http.Request) (*oidc.Principal, bool) {
+	principal, ok := principalFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return nil, false
+	}
+	if !principal.IsAdmin {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return nil, false
+	}
+	return principal, true
 }
 
 func toCreateResponse(copyRecord *store.Copy) apiv2.CreateCopyResponse {
@@ -419,6 +420,33 @@ func looksLikeConnectionString(value string) bool {
 	return strings.HasPrefix(trimmed, "postgres://") ||
 		strings.HasPrefix(trimmed, "postgresql://") ||
 		strings.Contains(trimmed, "@tcp(")
+}
+
+// decodeBody decodes a JSON request body into dst, ignoring benign read
+// errors (context cancellation, EOF on an empty body).
+func decodeBody(r *http.Request, dst any) error {
+	err := json.NewDecoder(r.Body).Decode(dst)
+	if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+
+// isValidRemoteDumpURI reports whether uri is an accepted remote scheme
+// (s3:// or https://).
+func isValidRemoteDumpURI(uri string) bool {
+	return strings.HasPrefix(uri, "s3://") || strings.HasPrefix(uri, "https://")
+}
+
+// resolveTTL validates and unwraps an optional TTLSeconds pointer.
+func resolveTTL(v *int) (int, error) {
+	if v == nil {
+		return 0, nil
+	}
+	if *v <= 0 {
+		return 0, fmt.Errorf("ttl_seconds must be greater than zero")
+	}
+	return *v, nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

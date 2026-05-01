@@ -143,24 +143,42 @@ func TestServerListAndEventsRedactSecrets(t *testing.T) {
 	controller := &controllerStub{}
 	api := newTestAPI(cs, es, controller)
 
-	if err := cs.Create(&store.Copy{
+	seedCopyForOwner(t, cs, &store.Copy{
 		ID:               "copy-1",
 		Status:           store.StatusReady,
 		OwnerSubject:     "user-1",
 		ConnectionString: "postgres://hidden",
 		TTLSeconds:       3600,
-	}); err != nil {
-		t.Fatalf("create copy 1: %v", err)
-	}
-	if err := cs.Create(&store.Copy{
+	})
+	seedCopyForOwner(t, cs, &store.Copy{
 		ID:               "copy-2",
 		Status:           store.StatusReady,
 		OwnerSubject:     "user-2",
 		ConnectionString: "postgres://hidden-2",
 		TTLSeconds:       3600,
-	}); err != nil {
-		t.Fatalf("create copy 2: %v", err)
+	})
+	seedEventWithSecrets(t, es)
+
+	listRec := serveAuthedRequest(t, api, http.MethodGet, "/v2/copies")
+	assertStatusCode(t, listRec, http.StatusOK, "list")
+	assertListDoesNotLeakConnectionString(t, decodeListResponse(t, listRec))
+
+	eventRec := serveAuthedRequest(t, api, http.MethodGet, "/v2/copies/copy-1/events")
+	assertStatusCode(t, eventRec, http.StatusOK, "events")
+	assertEventsRedactSecrets(t, decodeEventResponse(t, eventRec))
+}
+
+func seedCopyForOwner(t *testing.T, cs *store.CopyStore, copy *store.Copy) {
+	t.Helper()
+
+	if err := cs.Create(copy); err != nil {
+		t.Fatalf("create copy %s: %v", copy.ID, err)
 	}
+}
+
+func seedEventWithSecrets(t *testing.T, es *store.EventStore) {
+	t.Helper()
+
 	if err := es.Append("copy", "copy-1", "ready", "system", map[string]any{
 		"connection_string": "postgres://secret",
 		"nested": map[string]any{
@@ -169,38 +187,60 @@ func TestServerListAndEventsRedactSecrets(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append event: %v", err)
 	}
+}
 
-	listReq := httptest.NewRequest(http.MethodGet, "/v2/copies", nil)
-	listReq.Header.Set("Authorization", "Bearer owner-token")
-	listRec := httptest.NewRecorder()
-	api.Handler().ServeHTTP(listRec, listReq)
+func serveAuthedRequest(t *testing.T, api *server.Server, method, path string) *httptest.ResponseRecorder {
+	t.Helper()
 
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("list status: got %d, want %d body=%s", listRec.Code, http.StatusOK, listRec.Body.String())
+	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Authorization", "Bearer owner-token")
+	rec := httptest.NewRecorder()
+	api.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func assertStatusCode(t *testing.T, rec *httptest.ResponseRecorder, want int, label string) {
+	t.Helper()
+
+	if rec.Code != want {
+		t.Fatalf("%s status: got %d, want %d body=%s", label, rec.Code, want, rec.Body.String())
 	}
+}
+
+func decodeListResponse(t *testing.T, rec *httptest.ResponseRecorder) []map[string]any {
+	t.Helper()
+
 	var listResp []map[string]any
-	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &listResp); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
+	return listResp
+}
+
+func assertListDoesNotLeakConnectionString(t *testing.T, listResp []map[string]any) {
+	t.Helper()
+
 	if len(listResp) != 1 {
 		t.Fatalf("owner list length: got %d, want %d", len(listResp), 1)
 	}
 	if _, ok := listResp[0]["connection_string"]; ok {
 		t.Fatal("list response leaked connection_string")
 	}
+}
 
-	eventReq := httptest.NewRequest(http.MethodGet, "/v2/copies/copy-1/events", nil)
-	eventReq.Header.Set("Authorization", "Bearer owner-token")
-	eventRec := httptest.NewRecorder()
-	api.Handler().ServeHTTP(eventRec, eventReq)
+func decodeEventResponse(t *testing.T, rec *httptest.ResponseRecorder) []apiv2.CopyEvent {
+	t.Helper()
 
-	if eventRec.Code != http.StatusOK {
-		t.Fatalf("events status: got %d, want %d body=%s", eventRec.Code, http.StatusOK, eventRec.Body.String())
-	}
 	var events []apiv2.CopyEvent
-	if err := json.Unmarshal(eventRec.Body.Bytes(), &events); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
 		t.Fatalf("decode events: %v", err)
 	}
+	return events
+}
+
+func assertEventsRedactSecrets(t *testing.T, events []apiv2.CopyEvent) {
+	t.Helper()
+
 	if got := events[0].Metadata["connection_string"]; got != "[redacted]" {
 		t.Fatalf("connection_string redaction: got %#v, want %#v", got, "[redacted]")
 	}
@@ -291,14 +331,22 @@ func newTestAPI(cs *store.CopyStore, es *store.EventStore, controller *controlle
 }
 
 func newTestAPIWithRefresher(cs *store.CopyStore, es *store.EventStore, controller *controllerStub, refresher server.Refresher) *server.Server {
-	return server.New(":0", controller, refresher, cs, es, &authStub{}, func() server.StatusResponse {
-		return server.StatusResponse{
-			Version:       "test",
-			ActiveCopies:  1,
-			WarmCopies:    0,
-			PortPoolFree:  10,
-			AdvertiseHost: "db.example.com",
-		}
+	return server.New(server.Config{
+		Addr:       ":0",
+		Controller: controller,
+		Refresher:  refresher,
+		Copies:     cs,
+		Events:     es,
+		Auth:       &authStub{},
+		StatusFn: func() server.StatusResponse {
+			return server.StatusResponse{
+				Version:       "test",
+				ActiveCopies:  1,
+				WarmCopies:    0,
+				PortPoolFree:  10,
+				AdvertiseHost: "db.example.com",
+			}
+		},
 	})
 }
 
