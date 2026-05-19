@@ -3,8 +3,6 @@
 package postgres_test
 
 import (
-	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/attaradev/ditto/engine"
@@ -13,96 +11,46 @@ import (
 )
 
 func TestPostgresDumpRestoreCycle(t *testing.T) {
-	ctx := t.Context()
 	suite := integrationdb.NewSuite(t, "postgres")
-	eng := suite.Engine
 	srcDB := suite.StartSource()
-	seedPGWidgets(t, ctx, srcDB.LocalDSN())
+	seedPGWidgets(t, srcDB)
 
-	dumpDir := t.TempDir()
-	dumpPath := dumpDir + "/dump.pgc"
-	if err := eng.Dump(ctx, engine.DumpRequest{
-		Docker:   suite.Docker,
-		Source:   srcDB.NetworkSourceConfig(),
-		DestPath: dumpPath,
-	}); err != nil {
-		t.Fatalf("Dump: %v", err)
-	}
-
-	copyDB := suite.StartCopy(dumpDir)
-	if err := eng.Restore(ctx, engine.RestoreRequest{
-		Docker:        suite.Docker,
-		DumpPath:      dumpPath,
-		ContainerName: copyDB.Name,
-		Copy:          copyDB.Bootstrap,
-	}); err != nil {
-		t.Fatalf("Restore: %v", err)
-	}
-
-	assertPGWidgetCount(t, ctx, copyDB.LocalDSN(), 2)
+	copyDB := suite.DumpRestore(t, srcDB, "dump.pgc", engine.DumpOptions{})
+	integrationdb.AssertTableCount(t, copyDB, "widgets", 2)
 }
 
 func TestPostgresSchemaOnlyDump(t *testing.T) {
-	ctx := t.Context()
 	suite := integrationdb.NewSuite(t, "postgres")
-	eng := suite.Engine
 	srcDB := suite.StartSource()
-	seedPGWidgets(t, ctx, srcDB.LocalDSN())
+	seedPGWidgets(t, srcDB)
 
-	dumpDir := t.TempDir()
-	dumpPath := dumpDir + "/schema.pgc"
-	if err := eng.Dump(ctx, engine.DumpRequest{
-		Docker:   suite.Docker,
-		Source:   srcDB.NetworkSourceConfig(),
-		DestPath: dumpPath,
-		Options:  engine.DumpOptions{SchemaOnly: true},
-	}); err != nil {
-		t.Fatalf("Dump schema-only: %v", err)
-	}
-
-	copyDB := suite.StartCopy(dumpDir)
-	if err := eng.Restore(ctx, engine.RestoreRequest{
-		Docker:        suite.Docker,
-		DumpPath:      dumpPath,
-		ContainerName: copyDB.Name,
-		Copy:          copyDB.Bootstrap,
-	}); err != nil {
-		t.Fatalf("Restore schema-only: %v", err)
-	}
-
-	// Table must exist but contain zero rows (schema-only dump has no data).
-	assertPGWidgetCount(t, ctx, copyDB.LocalDSN(), 0)
+	copyDB := suite.DumpRestore(t, srcDB, "schema.pgc", engine.DumpOptions{SchemaOnly: true})
+	integrationdb.AssertTableCount(t, copyDB, "widgets", 0)
 }
 
-func seedPGWidgets(t *testing.T, ctx context.Context, dsn string) {
-	t.Helper()
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatalf("open source db: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+func TestPostgresExcludeTableData(t *testing.T) {
+	suite := integrationdb.NewSuite(t, "postgres")
+	srcDB := suite.StartSource()
+	seedPGWidgets(t, srcDB)
+	seedPGEvents(t, srcDB)
 
-	if _, err := db.ExecContext(ctx, `CREATE TABLE widgets (id SERIAL PRIMARY KEY, name TEXT NOT NULL)`); err != nil {
-		t.Fatalf("create table: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO widgets (name) VALUES ('foo'), ('bar')`); err != nil {
-		t.Fatalf("insert rows: %v", err)
-	}
+	copyDB := suite.DumpRestore(t, srcDB, "dump.pgc", engine.DumpOptions{ExcludeTableData: []string{"events"}})
+	integrationdb.AssertTableCount(t, copyDB, "widgets", 2)
+	integrationdb.AssertTableCount(t, copyDB, "events", 0)
 }
 
-func assertPGWidgetCount(t *testing.T, ctx context.Context, dsn string, want int) {
+func seedPGWidgets(t *testing.T, db *integrationdb.Database) {
 	t.Helper()
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatalf("open copy db: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	integrationdb.ExecSQL(t, db,
+		`CREATE TABLE widgets (id SERIAL PRIMARY KEY, name TEXT NOT NULL)`,
+		`INSERT INTO widgets (name) VALUES ('foo'), ('bar')`,
+	)
+}
 
-	var count int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM widgets").Scan(&count); err != nil {
-		t.Fatalf("count widgets: %v", err)
-	}
-	if count != want {
-		t.Errorf("widget count: got %d, want %d", count, want)
-	}
+func seedPGEvents(t *testing.T, db *integrationdb.Database) {
+	t.Helper()
+	integrationdb.ExecSQL(t, db,
+		`CREATE TABLE events (id SERIAL PRIMARY KEY, payload TEXT)`,
+		`INSERT INTO events (payload) VALUES ('e1'), ('e2'), ('e3')`,
+	)
 }

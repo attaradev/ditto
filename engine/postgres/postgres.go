@@ -101,6 +101,9 @@ func (e *Engine) Dump(
 	if req.Options.SchemaOnly {
 		cmd = append(cmd, "--schema-only")
 	}
+	for _, t := range req.Options.ExcludeTableData {
+		cmd = append(cmd, "--exclude-table-data="+t)
+	}
 
 	if err := dockerutil.RunContainer(ctx, req.Docker, dockerutil.RunRequest{
 		Config: &container.Config{
@@ -161,6 +164,9 @@ func (e *Engine) DumpFromContainer(ctx context.Context, req engine.DumpFromConta
 	}
 	if req.Options.SchemaOnly {
 		cmd = append(cmd, "--schema-only")
+	}
+	for _, t := range req.Options.ExcludeTableData {
+		cmd = append(cmd, "--exclude-table-data="+t)
 	}
 	if err := dockerutil.Exec(ctx, req.Docker, dockerutil.ExecRequest{ContainerID: req.ContainerName, Command: cmd}); err != nil {
 		return fmt.Errorf("postgres: dump from container failed: %w", err)

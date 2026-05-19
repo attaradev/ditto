@@ -157,6 +157,7 @@ func (s *Scheduler) createFullDump(ctx context.Context, src engine.SourceConfig,
 	if err := s.dumpSource(ctx, sourceDumpRequest{
 		source:   src,
 		destPath: dumpDest,
+		options:  engine.DumpOptions{ExcludeTableData: s.cfg.Dump.ExcludeTableData},
 	}); err != nil {
 		_ = os.Remove(dumpDest)
 		return nil, fmt.Errorf("dump: engine dump: %w", err)

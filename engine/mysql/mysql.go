@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/attaradev/ditto/engine"
@@ -84,25 +85,18 @@ func (e *Engine) Dump(
 	clientImage := engineutil.ClientImage(req.ClientImage, e.ContainerImage())
 
 	sqlDumpPath := req.DestPath + ".sql"
-	cmd := []string{
-		"--single-transaction",
-		"--routines",
-		"--triggers",
-		"--compress",
-		"--result-file=" + path.Join("/dump", filepath.Base(sqlDumpPath)),
-		"-h", src.Host,
-		"-P", fmt.Sprint(src.Port),
-		"-u", src.User,
-		src.Database,
+	dumpFile := path.Join("/dump", filepath.Base(sqlDumpPath))
+	baseFlags := []string{
+		"--single-transaction", "--routines", "--triggers",
+		"--quick", "--no-tablespaces", "--compress",
+		"-h", src.Host, "-P", fmt.Sprint(src.Port), "-u", src.User,
 	}
-	if req.Options.SchemaOnly {
-		cmd = append(cmd, "--no-data")
-	}
+	entrypoint, cmd := mysqldumpCmd(baseFlags, req.Options, dumpTarget{database: src.Database, dumpFile: dumpFile})
 
 	if err := dockerutil.RunContainer(ctx, req.Docker, dockerutil.RunRequest{
 		Config: &container.Config{
 			Image:      clientImage,
-			Entrypoint: []string{"mysqldump"},
+			Entrypoint: entrypoint,
 			Cmd:        cmd,
 			Env:        []string{"MYSQL_PWD=" + password},
 		},
@@ -168,16 +162,17 @@ func (e *Engine) DumpFromContainer(ctx context.Context, req engine.DumpFromConta
 		return err
 	}
 	sqlFile := filepath.Base(req.DestPath) + ".sql"
-	cmd := []string{
-		"mysqldump", "-u" + req.Copy.User, "-p" + req.Copy.Password,
+	dumpFile := "/dump/" + sqlFile
+	baseFlags := []string{
+		"-u" + req.Copy.User, "-p" + req.Copy.Password,
 		"--single-transaction", "--routines", "--triggers",
-		"--result-file=/dump/" + sqlFile,
-		req.Copy.Database,
+		"--quick", "--no-tablespaces",
 	}
-	if req.Options.SchemaOnly {
-		cmd = append(cmd, "--no-data")
-	}
-	if err := dockerutil.Exec(ctx, req.Docker, dockerutil.ExecRequest{ContainerID: req.ContainerName, Command: cmd}); err != nil {
+	entrypoint, args := mysqldumpCmd(baseFlags, req.Options, dumpTarget{database: req.Copy.Database, dumpFile: dumpFile})
+	if err := dockerutil.Exec(ctx, req.Docker, dockerutil.ExecRequest{
+		ContainerID: req.ContainerName,
+		Command:     append(entrypoint, args...),
+	}); err != nil {
 		return fmt.Errorf("mysql: dump from container failed: %w", err)
 	}
 
@@ -203,6 +198,55 @@ func (e *Engine) WaitReady(conn engine.ConnectionConfig, timeout time.Duration) 
 }
 
 var _ engine.Engine = (*Engine)(nil)
+
+// dumpTarget names the database and output file for a mysqldump invocation,
+// preventing the two strings from being passed in the wrong order.
+type dumpTarget struct {
+	database string
+	dumpFile string
+}
+
+// mysqldumpCmd returns the container entrypoint and args for a mysqldump run.
+// When ExcludeTableData is set (and SchemaOnly is not), it returns a two-pass
+// sh -c script that preserves schema for excluded tables while skipping their rows.
+func mysqldumpCmd(baseFlags []string, opts engine.DumpOptions, target dumpTarget) (entrypoint, args []string) {
+	if len(opts.ExcludeTableData) > 0 && !opts.SchemaOnly {
+		return []string{"sh", "-c"}, []string{excludeDataScript(baseFlags, opts.ExcludeTableData, target)}
+	}
+	cmd := make([]string, 0, len(baseFlags)+3)
+	cmd = append(cmd, baseFlags...)
+	cmd = append(cmd, "--result-file="+target.dumpFile, target.database)
+	if opts.SchemaOnly {
+		cmd = append(cmd, "--no-data")
+	}
+	return []string{"mysqldump"}, cmd
+}
+
+// excludeDataScript builds a two-pass sh script: pass 1 dumps the full schema
+// (--no-data), pass 2 dumps row data while ignoring the excluded tables.
+func excludeDataScript(baseFlags, excludeTables []string, target dumpTarget) string {
+	schemaArgs := make([]string, 0, len(baseFlags)+3)
+	schemaArgs = append(schemaArgs, baseFlags...)
+	schemaArgs = append(schemaArgs, "--no-data", "--result-file="+target.dumpFile, target.database)
+
+	dataArgs := make([]string, 0, len(baseFlags)+len(excludeTables)+2)
+	dataArgs = append(dataArgs, baseFlags...)
+	dataArgs = append(dataArgs, "--no-create-info")
+	for _, t := range excludeTables {
+		dataArgs = append(dataArgs, "--ignore-table="+target.database+"."+t)
+	}
+	dataArgs = append(dataArgs, target.database)
+	return "mysqldump " + shellJoin(schemaArgs) + " && mysqldump " + shellJoin(dataArgs) + " >> " + target.dumpFile
+}
+
+// shellJoin joins args into a shell-safe string by single-quoting each one.
+func shellJoin(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
+	}
+	return strings.Join(quoted, " ")
+}
 
 func gzipFile(srcPath string, destPath string) error {
 	src, err := os.Open(srcPath)

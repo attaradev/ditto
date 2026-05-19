@@ -124,6 +124,7 @@ dump:
   stale_threshold: 7200
   client_image: ""
   schema_path: ""
+  exclude_table_data: []
   on_failure:
     webhook_url: ""
     exec: ""
@@ -136,6 +137,7 @@ dump:
 | `dump.stale_threshold` | `7200` | Freshness budget in seconds; staleness warnings appear once the file is roughly 2x older than this |
 | `dump.client_image` | engine default | Optional helper image for dump operations |
 | `dump.schema_path` | empty | Optional path for a DDL-only dump alongside the full dump |
+| `dump.exclude_table_data` | empty | List of table names to include in schema but exclude from row data. Useful for large audit or event tables that inflate the dump without adding development value. On MySQL the schema is preserved via a two-pass dump; on PostgreSQL `--exclude-table-data` is used. Set via `DITTO_DUMP_EXCLUDE_TABLE_DATA=table1,table2` as a comma-separated list. |
 | `dump.on_failure.webhook_url` | empty | HTTP endpoint to POST a JSON failure payload when a scheduled dump fails |
 | `dump.on_failure.exec` | empty | Shell command to run when a scheduled dump fails (`webhook_url` takes precedence) |
 

@@ -2,7 +2,7 @@
 #
 # Copy this file to ditto.yaml (or ~/.ditto/ditto.yaml) and fill in your values.
 # Environment variables with the prefix DITTO_ override any field here:
-#   DITTO_SOURCE_HOST=other.rds.example.com
+#   DITTO_SOURCE_HOST=other.db.example.com
 
 source:
   # Option A — database URL (engine, host, port, database, user, and password
@@ -65,6 +65,14 @@ dump:
   #   - CI schema checks that don't need production data
   # Leave empty (default) to skip the schema-only dump.
   # schema_path: /data/dump/schema.gz
+
+  # Optional list of tables to include in the dump schema but exclude from row data.
+  # Useful for large audit logs, event streams, or analytics tables that inflate the
+  # dump without adding development value. The table schema (CREATE TABLE) is preserved
+  # so foreign keys and migrations still work correctly.
+  # exclude_table_data:
+  #   - audit_logs
+  #   - raw_events
 
   # Alert when a scheduled dump fails. Either webhook_url or exec may be set;
   # webhook_url takes precedence. Both are optional.

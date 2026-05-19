@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +120,33 @@ func (s *Suite) StartCopy(dumpDir string) *Database {
 		bindHost: "127.0.0.1",
 		dumpDir:  dumpDir,
 	}, copyBootstrap())
+}
+
+// DumpRestore dumps src with opts into a temp directory, starts a fresh copy
+// container, restores the dump into it, and returns the copy. It is a shared
+// scaffold for engine integration tests so each test only states what varies.
+func (s *Suite) DumpRestore(t *testing.T, src *Database, dumpFile string, opts engine.DumpOptions) *Database {
+	t.Helper()
+	dumpDir := t.TempDir()
+	dumpPath := filepath.Join(dumpDir, dumpFile)
+	if err := s.Engine.Dump(s.ctx, engine.DumpRequest{
+		Docker:   s.Docker,
+		Source:   src.NetworkSourceConfig(),
+		DestPath: dumpPath,
+		Options:  opts,
+	}); err != nil {
+		t.Fatalf("Dump: %v", err)
+	}
+	copyDB := s.StartCopy(dumpDir)
+	if err := s.Engine.Restore(s.ctx, engine.RestoreRequest{
+		Docker:        s.Docker,
+		DumpPath:      dumpPath,
+		ContainerName: copyDB.Name,
+		Copy:          copyDB.Bootstrap,
+	}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	return copyDB
 }
 
 // HostAccessAddress returns a non-loopback IP address that helper containers
@@ -282,6 +310,31 @@ func OpenDB(t *testing.T, conn DBConn) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// ExecSQL opens a connection to db and executes each SQL statement in order.
+func ExecSQL(t *testing.T, db *Database, stmts ...string) {
+	t.Helper()
+	conn := OpenDB(t, DBConn{EngineName: db.Suite.EngineName, DSN: db.LocalDSN()})
+	for _, stmt := range stmts {
+		if _, err := conn.ExecContext(t.Context(), stmt); err != nil {
+			t.Fatalf("exec SQL: %v", err)
+		}
+	}
+}
+
+// AssertTableCount asserts that table in db contains exactly want rows.
+func AssertTableCount(t *testing.T, db *Database, table string, want int) {
+	t.Helper()
+	conn := OpenDB(t, DBConn{EngineName: db.Suite.EngineName, DSN: db.LocalDSN()})
+	var got int
+	//nolint:gosec // table name is caller-controlled test data, not user input
+	if err := conn.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM "+table).Scan(&got); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	if got != want {
+		t.Errorf("%s count: got %d, want %d", table, got, want)
+	}
 }
 
 // MustFreePort returns an available TCP port on the host.

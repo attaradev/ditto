@@ -3,8 +3,6 @@
 package mysql_test
 
 import (
-	"context"
-	"database/sql"
 	"testing"
 
 	"github.com/attaradev/ditto/engine"
@@ -13,96 +11,46 @@ import (
 )
 
 func TestMySQLDumpRestoreCycle(t *testing.T) {
-	ctx := t.Context()
 	suite := integrationdb.NewSuite(t, "mysql")
-	eng := suite.Engine
 	srcDB := suite.StartSource()
-	seedMySQLWidgets(t, ctx, srcDB.LocalDSN())
+	seedMySQLWidgets(t, srcDB)
 
-	dumpDir := t.TempDir()
-	dumpPath := dumpDir + "/dump.sql.gz"
-	if err := eng.Dump(ctx, engine.DumpRequest{
-		Docker:   suite.Docker,
-		Source:   srcDB.NetworkSourceConfig(),
-		DestPath: dumpPath,
-	}); err != nil {
-		t.Fatalf("Dump: %v", err)
-	}
-
-	copyDB := suite.StartCopy(dumpDir)
-	if err := eng.Restore(ctx, engine.RestoreRequest{
-		Docker:        suite.Docker,
-		DumpPath:      dumpPath,
-		ContainerName: copyDB.Name,
-		Copy:          copyDB.Bootstrap,
-	}); err != nil {
-		t.Fatalf("Restore: %v", err)
-	}
-
-	assertMySQLWidgetCount(t, ctx, copyDB.LocalDSN(), 2)
+	copyDB := suite.DumpRestore(t, srcDB, "dump.sql.gz", engine.DumpOptions{})
+	integrationdb.AssertTableCount(t, copyDB, "widgets", 2)
 }
 
 func TestMySQLSchemaOnlyDump(t *testing.T) {
-	ctx := t.Context()
 	suite := integrationdb.NewSuite(t, "mysql")
-	eng := suite.Engine
 	srcDB := suite.StartSource()
-	seedMySQLWidgets(t, ctx, srcDB.LocalDSN())
+	seedMySQLWidgets(t, srcDB)
 
-	dumpDir := t.TempDir()
-	dumpPath := dumpDir + "/schema.sql.gz"
-	if err := eng.Dump(ctx, engine.DumpRequest{
-		Docker:   suite.Docker,
-		Source:   srcDB.NetworkSourceConfig(),
-		DestPath: dumpPath,
-		Options:  engine.DumpOptions{SchemaOnly: true},
-	}); err != nil {
-		t.Fatalf("Dump schema-only: %v", err)
-	}
-
-	copyDB := suite.StartCopy(dumpDir)
-	if err := eng.Restore(ctx, engine.RestoreRequest{
-		Docker:        suite.Docker,
-		DumpPath:      dumpPath,
-		ContainerName: copyDB.Name,
-		Copy:          copyDB.Bootstrap,
-	}); err != nil {
-		t.Fatalf("Restore schema-only: %v", err)
-	}
-
-	// Table must exist but contain zero rows.
-	assertMySQLWidgetCount(t, ctx, copyDB.LocalDSN(), 0)
+	copyDB := suite.DumpRestore(t, srcDB, "schema.sql.gz", engine.DumpOptions{SchemaOnly: true})
+	integrationdb.AssertTableCount(t, copyDB, "widgets", 0)
 }
 
-func seedMySQLWidgets(t *testing.T, ctx context.Context, dsn string) {
-	t.Helper()
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		t.Fatalf("open source db: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+func TestMySQLExcludeTableData(t *testing.T) {
+	suite := integrationdb.NewSuite(t, "mysql")
+	srcDB := suite.StartSource()
+	seedMySQLWidgets(t, srcDB)
+	seedMySQLEvents(t, srcDB)
 
-	if _, err := db.ExecContext(ctx, `CREATE TABLE widgets (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL)`); err != nil {
-		t.Fatalf("create table: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO widgets (name) VALUES ('foo'), ('bar')`); err != nil {
-		t.Fatalf("insert rows: %v", err)
-	}
+	copyDB := suite.DumpRestore(t, srcDB, "dump.sql.gz", engine.DumpOptions{ExcludeTableData: []string{"events"}})
+	integrationdb.AssertTableCount(t, copyDB, "widgets", 2)
+	integrationdb.AssertTableCount(t, copyDB, "events", 0)
 }
 
-func assertMySQLWidgetCount(t *testing.T, ctx context.Context, dsn string, want int) {
+func seedMySQLWidgets(t *testing.T, db *integrationdb.Database) {
 	t.Helper()
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		t.Fatalf("open copy db: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	integrationdb.ExecSQL(t, db,
+		`CREATE TABLE widgets (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL)`,
+		`INSERT INTO widgets (name) VALUES ('foo'), ('bar')`,
+	)
+}
 
-	var count int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM widgets").Scan(&count); err != nil {
-		t.Fatalf("count widgets: %v", err)
-	}
-	if count != want {
-		t.Errorf("widget count: got %d, want %d", count, want)
-	}
+func seedMySQLEvents(t *testing.T, db *integrationdb.Database) {
+	t.Helper()
+	integrationdb.ExecSQL(t, db,
+		`CREATE TABLE events (id INT AUTO_INCREMENT PRIMARY KEY, payload TEXT)`,
+		`INSERT INTO events (payload) VALUES ('e1'), ('e2'), ('e3')`,
+	)
 }

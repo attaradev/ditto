@@ -65,7 +65,7 @@ type ServerDBTLS struct {
 	KeyFile  string `mapstructure:"key_file"`
 }
 
-// Source holds connection parameters for the RDS source database.
+// Source holds connection parameters for the source database.
 type Source struct {
 	URL            string `mapstructure:"url"` // DSN alternative to individual fields
 	Engine         string `mapstructure:"engine"`
@@ -111,12 +111,13 @@ type ObfuscationRule struct {
 
 // Dump controls the dump scheduler.
 type Dump struct {
-	Schedule       string        `mapstructure:"schedule"`
-	Path           string        `mapstructure:"path"`
-	SchemaPath     string        `mapstructure:"schema_path"`     // optional: path for a schema-only (DDL) dump; empty = disabled
-	StaleThreshold int           `mapstructure:"stale_threshold"` // seconds
-	ClientImage    string        `mapstructure:"client_image"`    // optional helper image override for dump operations
-	OnFailure      DumpOnFailure `mapstructure:"on_failure"`
+	Schedule         string        `mapstructure:"schedule"`
+	Path             string        `mapstructure:"path"`
+	SchemaPath       string        `mapstructure:"schema_path"`        // optional: path for a schema-only (DDL) dump; empty = disabled
+	StaleThreshold   int           `mapstructure:"stale_threshold"`    // seconds
+	ClientImage      string        `mapstructure:"client_image"`       // optional helper image override for dump operations
+	ExcludeTableData []string      `mapstructure:"exclude_table_data"` // tables to include in schema but exclude from row data
+	OnFailure        DumpOnFailure `mapstructure:"on_failure"`
 }
 
 // DumpOnFailure configures an alert sent when a scheduled dump fails.
@@ -142,6 +143,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("dump.path", defaultDumpFilePath())
 	v.SetDefault("dump.stale_threshold", 7200)
 	v.SetDefault("dump.client_image", "")
+	v.SetDefault("dump.exclude_table_data", []string{})
 	v.SetDefault("warm_pool_size", 0)
 	v.SetDefault("docker_host", "")
 	v.SetDefault("server.addr", ":8080")
@@ -338,6 +340,9 @@ func validate(cfg *Config) error {
 	if err := validateTargets(cfg.Targets); err != nil {
 		return err
 	}
+	if err := validateDump(cfg.Dump); err != nil {
+		return err
+	}
 	return validateObfuscation(cfg.Obfuscation.Rules)
 }
 
@@ -460,6 +465,18 @@ func validateTarget(name string, target Target) error {
 	return nil
 }
 
+func validateDump(d Dump) error {
+	for i, table := range d.ExcludeTableData {
+		if table == "" {
+			return fmt.Errorf("config: dump.exclude_table_data[%d]: table name must not be empty", i)
+		}
+		if strings.Contains(table, ".") {
+			return fmt.Errorf("config: dump.exclude_table_data[%d]: table name %q must not contain a dot (provide the table name only, not schema.table)", i, table)
+		}
+	}
+	return nil
+}
+
 var validStrategies = map[string]bool{
 	"nullify": true,
 	"redact":  true,
@@ -494,7 +511,7 @@ func validateObfuscationRule(i int, r ObfuscationRule) error {
 		return fmt.Errorf("config: obfuscation rule %d: column is required", i)
 	}
 	if !validStrategies[r.Strategy] {
-		return fmt.Errorf("config: obfuscation rule %d: unknown strategy %q (use: nullify, redact, mask, hash)", i, r.Strategy)
+		return fmt.Errorf("config: obfuscation rule %d: unknown strategy %q (use: nullify, redact, mask, hash, replace)", i, r.Strategy)
 	}
 	if r.MaskChar != "" && len([]rune(r.MaskChar)) != 1 {
 		return fmt.Errorf("config: obfuscation rule %d: mask_char must be a single character", i)

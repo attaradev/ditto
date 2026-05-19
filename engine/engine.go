@@ -26,7 +26,8 @@ type SourceConfig struct {
 // DumpOptions controls optional dump behaviour. The zero value produces a
 // full dump (schema + data), which is the default for all call sites.
 type DumpOptions struct {
-	SchemaOnly bool // when true, dump DDL only — no row data
+	SchemaOnly       bool     // when true, dump DDL only — no row data
+	ExcludeTableData []string // tables to include in schema but exclude from row data
 }
 
 // DumpRequest contains all inputs needed to create a dump from a source

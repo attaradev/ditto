@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -166,5 +167,27 @@ func TestSchemaOnlyDump(t *testing.T) {
 	}
 	if eng.dumps[1].DestPath != schemaPath+".tmp" || !eng.dumps[1].Options.SchemaOnly {
 		t.Errorf("schema dump request: got dest=%q schemaOnly=%v", eng.dumps[1].DestPath, eng.dumps[1].Options.SchemaOnly)
+	}
+}
+
+func TestExcludeTableDataPassedThrough(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "latest.gz")
+
+	eng := &dumpMock{content: []byte("fake dump data")}
+	sched := newTestScheduler(t, destPath, eng)
+	sched.cfg.Dump.ExcludeTableData = []string{"audit_logs", "raw_events"}
+
+	if err := sched.RunOnce(t.Context()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	if len(eng.dumps) != 1 {
+		t.Fatalf("dump requests: got %d, want 1", len(eng.dumps))
+	}
+	got := eng.dumps[0].Options.ExcludeTableData
+	want := []string{"audit_logs", "raw_events"}
+	if !slices.Equal(got, want) {
+		t.Errorf("ExcludeTableData: got %v, want %v", got, want)
 	}
 }
