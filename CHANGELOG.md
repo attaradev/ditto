@@ -5,6 +5,28 @@ All notable changes to ditto are documented in this file.
 This changelog starts with the current unreleased product snapshot. Earlier history is available in
 `git log`.
 
+## 0.4.0 — 2026-05-19
+
+### Added
+
+- `dump.exclude_table_data`: list table names to keep in schema but exclude from
+  row data, reducing dump size for audit logs, event streams, and analytics tables.
+  Supported on Postgres (native `--exclude-table-data`) and MySQL (two-pass
+  `sh -c` script). Set via YAML or `DITTO_DUMP_EXCLUDE_TABLE_DATA=t1,t2`.
+
+### Changed
+
+- MySQL dumps now pass `--quick` (row-at-a-time retrieval; avoids full-table
+  memory buffering) and `--no-tablespaces` (skips `CREATE TABLESPACE`; avoids
+  PROCESS privilege failures on managed databases) in all invocations
+- Integration test helpers (`DumpRestore`, `ExecSQL`, `AssertTableCount`) extracted
+  to `integrationdb` package; engine integration tests rewritten to use them
+
+### Fixed
+
+- `validateObfuscationRule` error message now lists `replace` alongside the
+  other valid strategies
+
 ## 0.3.3 — 2026-05-01
 
 ### Fixed
